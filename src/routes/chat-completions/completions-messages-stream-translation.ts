@@ -17,6 +17,10 @@ interface CompletionsFromMessagesStreamState {
   model: string
   roleSent: boolean
   toolCallIndex: number
+  // Name of synthetic forced tool for structured output unwrapping
+  forcedToolName: string | null
+  // Track anthropic block index to type (for forced tool remapping)
+  blockTypes: Map<number, "text" | "tool_use" | "thinking">
 }
 
 interface SSEMessage {
@@ -28,14 +32,17 @@ interface SSEMessage {
 // Public API
 // ---------------------------------------------------------------------------
 
-export const createCompletionsFromMessagesStreamState =
-  (): CompletionsFromMessagesStreamState => ({
-    responseId: "",
-    createdAt: Math.floor(Date.now() / 1000),
-    model: "",
-    roleSent: false,
-    toolCallIndex: 0,
-  })
+export const createCompletionsFromMessagesStreamState = (
+  forcedToolName?: string,
+): CompletionsFromMessagesStreamState => ({
+  responseId: "",
+  createdAt: Math.floor(Date.now() / 1000),
+  model: "",
+  roleSent: false,
+  toolCallIndex: 0,
+  forcedToolName: forcedToolName ?? null,
+  blockTypes: new Map(),
+})
 
 /**
  * Translate a single Anthropic stream event into zero or more
@@ -94,9 +101,16 @@ const handleContentBlockStart = (
   state: CompletionsFromMessagesStreamState,
 ): Array<SSEMessage> => {
   const block = event.content_block
+  const blockIndex = event.index
 
   if (block.type === "tool_use") {
     const toolBlock = block as { type: "tool_use"; id: string; name: string }
+    if (state.forcedToolName && toolBlock.name === state.forcedToolName) {
+      // Synthetic tool for structured output - treat as text content
+      state.blockTypes.set(blockIndex, "text")
+      return []
+    }
+    state.blockTypes.set(blockIndex, "tool_use")
     const messages: Array<SSEMessage> = [
       createChunkMessage(state, {
         delta: {
@@ -118,6 +132,12 @@ const handleContentBlockStart = (
     return messages
   }
 
+  if (block.type === "text") {
+    state.blockTypes.set(blockIndex, "text")
+  } else if (block.type === "thinking") {
+    state.blockTypes.set(blockIndex, "thinking")
+  }
+
   // text and thinking blocks don't need a start event in completions format
   return []
 }
@@ -127,6 +147,8 @@ const handleContentBlockDelta = (
   state: CompletionsFromMessagesStreamState,
 ): Array<SSEMessage> => {
   const delta = event.delta
+  const blockIndex = event.index
+  const blockType = state.blockTypes.get(blockIndex)
 
   if (delta.type === "text_delta") {
     return [
@@ -138,6 +160,15 @@ const handleContentBlockDelta = (
   }
 
   if (delta.type === "input_json_delta") {
+    if (blockType === "text") {
+      // Synthetic tool unwrapping: emit tool input as text content
+      return [
+        createChunkMessage(state, {
+          delta: { content: delta.partial_json },
+          finishReason: null,
+        }),
+      ]
+    }
     return [
       createChunkMessage(state, {
         delta: {

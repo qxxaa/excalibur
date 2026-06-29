@@ -297,3 +297,141 @@ describe("translateAnthropicStreamToResponsesEvent", () => {
     expect(types).toContain("response.completed")
   })
 })
+
+// ===========================================================================
+// Structured output: forced tool_use stream unwrapping
+// ===========================================================================
+
+describe("forced tool_use stream unwrapping (responses path)", () => {
+  it("remaps synthetic tool_use content_block_start to text message", () => {
+    const state = createMessagesToResponsesStreamState("structured_response")
+
+    // Simulate message_start first
+    translateAnthropicStreamToResponsesEvent(
+      {
+        type: "message_start",
+        message: {
+          id: "msg_1",
+          type: "message",
+          role: "assistant",
+          content: [],
+          model: "claude-sonnet-4.6",
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 10, output_tokens: 0 },
+        },
+      },
+      state,
+    )
+
+    const events = translateAnthropicStreamToResponsesEvent(
+      {
+        type: "content_block_start",
+        index: 0,
+        content_block: {
+          type: "tool_use",
+          id: "toolu_synth",
+          name: "structured_response",
+          input: {},
+        },
+      },
+      state,
+    )
+
+    // Should emit message item, not function_call item
+    const addedEvent = events.find(
+      (e) => e.type === "response.output_item.added",
+    )
+    expect(addedEvent).toBeDefined()
+    expect((addedEvent!.item as { type: string }).type).toBe("message")
+  })
+
+  it("emits input_json_delta as output_text.delta for synthetic tool", () => {
+    const state = createMessagesToResponsesStreamState("structured_response")
+
+    // Setup: message_start + block_start
+    translateAnthropicStreamToResponsesEvent(
+      {
+        type: "message_start",
+        message: {
+          id: "msg_1",
+          type: "message",
+          role: "assistant",
+          content: [],
+          model: "claude-sonnet-4.6",
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 10, output_tokens: 0 },
+        },
+      },
+      state,
+    )
+    translateAnthropicStreamToResponsesEvent(
+      {
+        type: "content_block_start",
+        index: 0,
+        content_block: {
+          type: "tool_use",
+          id: "toolu_synth",
+          name: "structured_response",
+          input: {},
+        },
+      },
+      state,
+    )
+
+    const events = translateAnthropicStreamToResponsesEvent(
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: '{"colours":' },
+      },
+      state,
+    )
+
+    expect(events).toHaveLength(1)
+    expect(events[0].type).toBe("response.output_text.delta")
+    expect(events[0].delta).toBe('{"colours":')
+  })
+
+  it("still emits function_call for real tool_use when forcedToolName is set", () => {
+    const state = createMessagesToResponsesStreamState("structured_response")
+
+    translateAnthropicStreamToResponsesEvent(
+      {
+        type: "message_start",
+        message: {
+          id: "msg_1",
+          type: "message",
+          role: "assistant",
+          content: [],
+          model: "claude-sonnet-4.6",
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 10, output_tokens: 0 },
+        },
+      },
+      state,
+    )
+
+    const events = translateAnthropicStreamToResponsesEvent(
+      {
+        type: "content_block_start",
+        index: 0,
+        content_block: {
+          type: "tool_use",
+          id: "toolu_real",
+          name: "search",
+          input: {},
+        },
+      },
+      state,
+    )
+
+    const addedEvent = events.find(
+      (e) => e.type === "response.output_item.added",
+    )
+    expect(addedEvent).toBeDefined()
+    expect((addedEvent!.item as { type: string }).type).toBe("function_call")
+  })
+})

@@ -4,6 +4,11 @@
  *
  * This provides a direct completions -> messages path without going through
  * the Responses API as an intermediary.
+ *
+ * Structured output: when the caller requests `response_format.json_schema`,
+ * the schema is enforced via a synthetic forced tool_use tool on the Anthropic
+ * side (mirroring Hindsight's AnthropicLLM strict_schema pattern). The tool's
+ * validated input is unwrapped and returned as text content to the caller.
  */
 
 import type {
@@ -24,6 +29,35 @@ import type {
   Tool,
 } from "~/services/copilot/create-chat-completions"
 
+// Name of the synthetic tool used for structured output enforcement
+const STRUCTURED_TOOL_NAME = "structured_response"
+
+// ---------------------------------------------------------------------------
+// Structured output detection
+// ---------------------------------------------------------------------------
+
+interface JsonSchemaSpec {
+  name: string
+  schema: Record<string, unknown>
+  strict?: boolean
+}
+
+const extractJsonSchema = (
+  payload: ChatCompletionsPayload,
+): JsonSchemaSpec | null => {
+  const rf = payload.response_format
+  if (!rf || rf.type !== "json_schema") return null
+  const spec = rf as {
+    type: "json_schema"
+    json_schema: {
+      name: string
+      schema: Record<string, unknown>
+      strict?: boolean
+    }
+  }
+  return spec.json_schema
+}
+
 // ---------------------------------------------------------------------------
 // Payload: Completions -> Messages
 // ---------------------------------------------------------------------------
@@ -32,6 +66,7 @@ export const translateCompletionsToMessagesPayload = (
   payload: ChatCompletionsPayload,
 ): AnthropicMessagesPayload => {
   const { system, messages } = translateMessages(payload.messages)
+  const jsonSchema = extractJsonSchema(payload)
   const tools = translateTools(payload.tools)
   const toolChoice = translateToolChoice(payload.tool_choice)
 
@@ -47,6 +82,20 @@ export const translateCompletionsToMessagesPayload = (
     ...(payload.user ? { metadata: { user_id: payload.user } } : {}),
   }
 
+  // Inject synthetic forced tool for structured output
+  if (jsonSchema) {
+    const syntheticTool: AnthropicTool = {
+      name: STRUCTURED_TOOL_NAME,
+      description: "Return the structured response.",
+      input_schema: jsonSchema.schema,
+    }
+    messagesPayload.tools = [...(messagesPayload.tools ?? []), syntheticTool]
+    messagesPayload.tool_choice = {
+      type: "tool",
+      name: STRUCTURED_TOOL_NAME,
+    }
+  }
+
   return messagesPayload
 }
 
@@ -56,6 +105,7 @@ export const translateCompletionsToMessagesPayload = (
 
 export const translateAnthropicResultToCompletions = (
   response: AnthropicResponse,
+  forcedToolName?: string,
 ): ChatCompletionResponse => {
   let content = ""
   const toolCalls: Array<{
@@ -69,19 +119,31 @@ export const translateAnthropicResultToCompletions = (
       content += block.text
     } else if (block.type === "tool_use") {
       const toolUse = block
-      toolCalls.push({
-        id: toolUse.id,
-        type: "function",
-        function: {
-          name: toolUse.name,
-          arguments: JSON.stringify(toolUse.input),
-        },
-      })
+      if (forcedToolName && toolUse.name === forcedToolName) {
+        // Synthetic tool - unwrap input as text content
+        content += JSON.stringify(toolUse.input)
+      } else {
+        toolCalls.push({
+          id: toolUse.id,
+          type: "function",
+          function: {
+            name: toolUse.name,
+            arguments: JSON.stringify(toolUse.input),
+          },
+        })
+      }
     }
     // thinking blocks are not part of the completions response
   }
 
-  const finishReason = mapStopReason(response.stop_reason, toolCalls.length > 0)
+  // If we unwrapped a synthetic tool and there are no real tool calls,
+  // the finish reason should be "stop", not "tool_calls"
+  const suppressToolUseStopReason =
+    forcedToolName !== undefined && toolCalls.length === 0
+  const finishReason =
+    suppressToolUseStopReason ? "stop" : (
+      mapStopReason(response.stop_reason, toolCalls.length > 0)
+    )
 
   return {
     id: response.id,

@@ -39,23 +39,27 @@ export interface MessagesToResponsesStreamState {
   inputTokens: number
   outputTokens: number
   cachedTokens: number
+  // Name of synthetic forced tool for structured output unwrapping
+  forcedToolName: string | null
 }
 
-export const createMessagesToResponsesStreamState =
-  (): MessagesToResponsesStreamState => ({
-    responseId: "",
-    model: "",
-    createdAt: 0,
-    outputIndex: 0,
-    contentIndex: 0,
-    sequenceNumber: 0,
-    blockTypes: new Map(),
-    toolCalls: new Map(),
-    responseCreatedSent: false,
-    inputTokens: 0,
-    outputTokens: 0,
-    cachedTokens: 0,
-  })
+export const createMessagesToResponsesStreamState = (
+  forcedToolName?: string,
+): MessagesToResponsesStreamState => ({
+  responseId: "",
+  model: "",
+  createdAt: 0,
+  outputIndex: 0,
+  contentIndex: 0,
+  sequenceNumber: 0,
+  blockTypes: new Map(),
+  toolCalls: new Map(),
+  responseCreatedSent: false,
+  inputTokens: 0,
+  outputTokens: 0,
+  cachedTokens: 0,
+  forcedToolName: forcedToolName ?? null,
+})
 
 // ---------------------------------------------------------------------------
 // Main translation function
@@ -151,24 +155,40 @@ const handleContentBlockStart = (
       },
     })
   } else if (block.type === "tool_use") {
-    state.blockTypes.set(blockIndex, "tool_use")
     const toolBlock = block as { type: "tool_use"; id: string; name: string }
-    state.toolCalls.set(blockIndex, {
-      id: toolBlock.id,
-      name: toolBlock.name,
-    })
-    events.push({
-      type: "response.output_item.added",
-      output_index: state.outputIndex,
-      item: {
-        id: `fc_${state.outputIndex}`,
-        type: "function_call",
-        call_id: toolBlock.id,
+    if (state.forcedToolName && toolBlock.name === state.forcedToolName) {
+      // Synthetic tool for structured output - treat as text
+      state.blockTypes.set(blockIndex, "text")
+      events.push({
+        type: "response.output_item.added",
+        output_index: state.outputIndex,
+        item: {
+          id: `msg_${state.outputIndex}`,
+          type: "message",
+          role: "assistant",
+          status: "in_progress",
+          content: [{ type: "output_text", text: "" }],
+        },
+      })
+    } else {
+      state.blockTypes.set(blockIndex, "tool_use")
+      state.toolCalls.set(blockIndex, {
+        id: toolBlock.id,
         name: toolBlock.name,
-        arguments: "",
-        status: "in_progress",
-      },
-    })
+      })
+      events.push({
+        type: "response.output_item.added",
+        output_index: state.outputIndex,
+        item: {
+          id: `fc_${state.outputIndex}`,
+          type: "function_call",
+          call_id: toolBlock.id,
+          name: toolBlock.name,
+          arguments: "",
+          status: "in_progress",
+        },
+      })
+    }
   }
 
   return events
@@ -201,6 +221,14 @@ const handleContentBlockDelta = (
     events.push({
       type: "response.function_call_arguments.delta",
       output_index: state.outputIndex,
+      delta: delta.partial_json,
+    })
+  } else if (delta.type === "input_json_delta" && blockType === "text") {
+    // Synthetic tool unwrapping: emit tool input as text content
+    events.push({
+      type: "response.output_text.delta",
+      output_index: state.outputIndex,
+      content_index: 0,
       delta: delta.partial_json,
     })
   }

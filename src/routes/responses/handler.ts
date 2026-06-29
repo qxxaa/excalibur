@@ -306,6 +306,12 @@ const getTrimmedHeader = (c: Context, name: string): string | undefined => {
 const handleWithMessagesApi = async (c: Context, payload: ResponsesPayload) => {
   const messagesPayload = translateResponsesToMessagesPayload(payload)
 
+  // Detect if we injected a synthetic tool for structured output
+  const textFormat = (payload.text as { format?: { type: string } } | undefined)
+    ?.format
+  const forcedToolName =
+    textFormat?.type === "json_schema" ? "structured_response" : undefined
+
   const requestId = generateRequestIdFromPayload(
     { messages: payload.input },
     undefined,
@@ -335,6 +341,7 @@ const handleWithMessagesApi = async (c: Context, payload: ResponsesPayload) => {
     const responsesResult = translateAnthropicResultToResponses(
       anthropicResult,
       payload.model,
+      forcedToolName,
     )
     recordUsage({
       ...normalizeAnthropicUsage(anthropicResult.usage),
@@ -349,7 +356,7 @@ const handleWithMessagesApi = async (c: Context, payload: ResponsesPayload) => {
   // Streaming
   logger.debug("Streaming response from Copilot (Messages API fallback)")
   return streamSSE(c, async (stream) => {
-    const streamState = createMessagesToResponsesStreamState()
+    const streamState = createMessagesToResponsesStreamState(forcedToolName)
     let usage: UsageTokens = {}
 
     for await (const chunk of response as AsyncIterable<{

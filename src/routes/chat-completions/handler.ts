@@ -303,6 +303,11 @@ const handleWithMessagesApi = async (
 ) => {
   const messagesPayload = translateCompletionsToMessagesPayload(payload)
 
+  // Detect if we injected a synthetic tool for structured output
+  const rf = payload.response_format
+  const forcedToolName =
+    rf && rf.type === "json_schema" ? "structured_response" : undefined
+
   const requestId = generateRequestIdFromPayload(payload)
   logger.debug("Generated request ID (messages flow):", requestId)
 
@@ -326,8 +331,10 @@ const handleWithMessagesApi = async (
   if (!payload.stream && !isAsyncIterable(response)) {
     const anthropicResult = response
     debugJson(logger, "Non-streaming Messages result:", anthropicResult)
-    const completionResponse =
-      translateAnthropicResultToCompletions(anthropicResult)
+    const completionResponse = translateAnthropicResultToCompletions(
+      anthropicResult,
+      forcedToolName,
+    )
     recordUsage({
       ...normalizeAnthropicUsage(anthropicResult.usage),
       total_nano_aiu: normalizeOptionalToken(
@@ -341,7 +348,7 @@ const handleWithMessagesApi = async (
   // Streaming
   logger.debug("Streaming response from Copilot (Messages API)")
   return streamSSE(c, async (stream) => {
-    const streamState = createCompletionsFromMessagesStreamState()
+    const streamState = createCompletionsFromMessagesStreamState(forcedToolName)
     let usage: UsageTokens = {}
 
     for await (const chunk of response as AsyncIterable<{

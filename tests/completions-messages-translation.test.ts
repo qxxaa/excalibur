@@ -1056,3 +1056,212 @@ describe("translateAnthropicResultToCompletions", () => {
     expect(result.choices[0].message.tool_calls![1].function.name).toBe("fetch")
   })
 })
+
+// ===========================================================================
+// Structured output: forced tool_use for json_schema enforcement
+// ===========================================================================
+
+describe("structured output via forced tool_use", () => {
+  describe("request translation", () => {
+    it("injects synthetic tool when response_format is json_schema", () => {
+      const payload: ChatCompletionsPayload = {
+        model: "claude-sonnet-4.6",
+        messages: [{ role: "user", content: "List colours" }],
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "colours",
+            schema: {
+              type: "object",
+              properties: {
+                colours: { type: "array", items: { type: "string" } },
+              },
+              required: ["colours"],
+            },
+            strict: true,
+          },
+        },
+      }
+
+      const result = translateCompletionsToMessagesPayload(payload)
+
+      expect(result.tools).toBeDefined()
+      const synthTool = result.tools!.find(
+        (t) => t.name === "structured_response",
+      )
+      expect(synthTool).toBeDefined()
+      expect(synthTool!.input_schema).toEqual({
+        type: "object",
+        properties: { colours: { type: "array", items: { type: "string" } } },
+        required: ["colours"],
+      })
+      expect(result.tool_choice).toEqual({
+        type: "tool",
+        name: "structured_response",
+      })
+    })
+
+    it("appends synthetic tool alongside existing tools", () => {
+      const payload: ChatCompletionsPayload = {
+        model: "claude-sonnet-4.6",
+        messages: [{ role: "user", content: "Search and format" }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "search",
+              description: "Search",
+              parameters: { type: "object", properties: {} },
+            },
+          },
+        ],
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "result",
+            schema: { type: "object", properties: { ok: { type: "boolean" } } },
+          },
+        },
+      }
+
+      const result = translateCompletionsToMessagesPayload(payload)
+
+      expect(result.tools).toHaveLength(2)
+      expect(result.tools![0].name).toBe("search")
+      expect(result.tools![1].name).toBe("structured_response")
+      // tool_choice overridden to force synthetic tool
+      expect(result.tool_choice).toEqual({
+        type: "tool",
+        name: "structured_response",
+      })
+    })
+
+    it("does not inject synthetic tool for json_object format", () => {
+      const payload: ChatCompletionsPayload = {
+        model: "claude-sonnet-4.6",
+        messages: [{ role: "user", content: "Return JSON" }],
+        response_format: { type: "json_object" },
+      }
+
+      const result = translateCompletionsToMessagesPayload(payload)
+
+      expect(result.tools).toBeUndefined()
+      expect(result.tool_choice).toBeUndefined()
+    })
+
+    it("does not inject synthetic tool when no response_format", () => {
+      const payload: ChatCompletionsPayload = {
+        model: "claude-sonnet-4.6",
+        messages: [{ role: "user", content: "Hello" }],
+      }
+
+      const result = translateCompletionsToMessagesPayload(payload)
+
+      expect(result.tools).toBeUndefined()
+      expect(result.tool_choice).toBeUndefined()
+    })
+  })
+
+  describe("response unwrapping", () => {
+    it("unwraps synthetic tool_use as text content", () => {
+      const response: AnthropicResponse = {
+        id: "msg_struct",
+        type: "message",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_synth",
+            name: "structured_response",
+            input: { colours: ["red", "blue", "yellow"] },
+          },
+        ],
+        model: "claude-sonnet-4.6",
+        stop_reason: "tool_use",
+        stop_sequence: null,
+        usage: { input_tokens: 20, output_tokens: 15 },
+      }
+
+      const result = translateAnthropicResultToCompletions(
+        response,
+        "structured_response",
+      )
+
+      // Should be text content, not tool_calls
+      expect(result.choices[0].message.content).toBe(
+        '{"colours":["red","blue","yellow"]}',
+      )
+      expect(result.choices[0].message.tool_calls).toBeUndefined()
+      // finish_reason should be stop, not tool_calls
+      expect(result.choices[0].finish_reason).toBe("stop")
+    })
+
+    it("passes through real tool_use when forcedToolName is set", () => {
+      const response: AnthropicResponse = {
+        id: "msg_mixed",
+        type: "message",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_real",
+            name: "search",
+            input: { q: "test" },
+          },
+          {
+            type: "tool_use",
+            id: "toolu_synth",
+            name: "structured_response",
+            input: { result: "found" },
+          },
+        ],
+        model: "claude-sonnet-4.6",
+        stop_reason: "tool_use",
+        stop_sequence: null,
+        usage: { input_tokens: 30, output_tokens: 20 },
+      }
+
+      const result = translateAnthropicResultToCompletions(
+        response,
+        "structured_response",
+      )
+
+      // Real tool should be in tool_calls
+      expect(result.choices[0].message.tool_calls).toHaveLength(1)
+      expect(result.choices[0].message.tool_calls![0].function.name).toBe(
+        "search",
+      )
+      // Synthetic tool should be in content
+      expect(result.choices[0].message.content).toBe('{"result":"found"}')
+    })
+
+    it("treats all tool_use as normal when no forcedToolName", () => {
+      const response: AnthropicResponse = {
+        id: "msg_normal",
+        type: "message",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_1",
+            name: "structured_response",
+            input: { ok: true },
+          },
+        ],
+        model: "claude-sonnet-4.6",
+        stop_reason: "tool_use",
+        stop_sequence: null,
+        usage: { input_tokens: 10, output_tokens: 5 },
+      }
+
+      // No forcedToolName - should treat as normal tool_call
+      const result = translateAnthropicResultToCompletions(response)
+
+      expect(result.choices[0].message.tool_calls).toHaveLength(1)
+      expect(result.choices[0].message.tool_calls![0].function.name).toBe(
+        "structured_response",
+      )
+      expect(result.choices[0].message.content).toBeNull()
+    })
+  })
+})

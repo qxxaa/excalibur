@@ -5,6 +5,11 @@
  * this module translates the Responses payload into an Anthropic Messages payload,
  * sends it upstream, and translates the Anthropic response back to Responses format.
  *
+ * Structured output: when the caller requests `text.format` with
+ * `type: "json_schema"`, the schema is enforced via a synthetic forced tool_use
+ * tool on the Anthropic side. The tool's validated input is unwrapped and
+ * returned as text content in the Responses result.
+ *
  * This is the reverse direction of messages/responses-translation.ts.
  */
 
@@ -39,6 +44,30 @@ import {
 } from "~/services/copilot/create-responses"
 
 // ---------------------------------------------------------------------------
+// Structured output constants and detection
+// ---------------------------------------------------------------------------
+
+// Name of the synthetic tool used for structured output enforcement
+const STRUCTURED_TOOL_NAME = "structured_response"
+
+interface JsonSchemaFormat {
+  type: "json_schema"
+  name: string
+  schema: Record<string, unknown>
+  strict?: boolean
+}
+
+const extractJsonSchemaFromText = (
+  payload: ResponsesPayload,
+): JsonSchemaFormat | null => {
+  const text = payload.text as
+    | { format?: { type: string; [key: string]: unknown } }
+    | undefined
+  if (!text?.format || text.format.type !== "json_schema") return null
+  return text.format as unknown as JsonSchemaFormat
+}
+
+// ---------------------------------------------------------------------------
 // Request translation: Responses payload → Anthropic Messages payload
 // ---------------------------------------------------------------------------
 
@@ -49,6 +78,7 @@ export const translateResponsesToMessagesPayload = (
   const messages = translateInputToMessages(payload.input)
   const tools = translateToolsToAnthropic(payload.tools)
   const toolChoice = translateToolChoiceToAnthropic(payload.tool_choice)
+  const jsonSchema = extractJsonSchemaFromText(payload)
 
   const messagesPayload: AnthropicMessagesPayload = {
     model: payload.model,
@@ -70,6 +100,20 @@ export const translateResponsesToMessagesPayload = (
         payload.reasoning.effort,
         messagesPayload.max_tokens,
       ),
+    }
+  }
+
+  // Inject synthetic forced tool for structured output
+  if (jsonSchema) {
+    const syntheticTool: AnthropicTool = {
+      name: STRUCTURED_TOOL_NAME,
+      description: "Return the structured response.",
+      input_schema: jsonSchema.schema,
+    }
+    messagesPayload.tools = [...(messagesPayload.tools ?? []), syntheticTool]
+    messagesPayload.tool_choice = {
+      type: "tool",
+      name: STRUCTURED_TOOL_NAME,
     }
   }
 
@@ -391,6 +435,7 @@ const translateToolChoiceToAnthropic = (
 export const translateAnthropicResultToResponses = (
   response: AnthropicResponse,
   requestModel: string,
+  forcedToolName?: string,
 ): ResponsesResult => {
   const output: Array<ResponseOutputItem> = []
   let outputText = ""
@@ -418,14 +463,19 @@ export const translateAnthropicResultToResponses = (
       }
       case "tool_use": {
         const toolUse = block
-        output.push({
-          id: generateId(),
-          type: "function_call",
-          call_id: toolUse.id,
-          name: toolUse.name,
-          arguments: JSON.stringify(toolUse.input),
-          status: "completed",
-        } satisfies ResponseOutputFunctionCall)
+        if (forcedToolName && toolUse.name === forcedToolName) {
+          // Synthetic tool - unwrap input as text content
+          outputText += JSON.stringify(toolUse.input)
+        } else {
+          output.push({
+            id: generateId(),
+            type: "function_call",
+            call_id: toolUse.id,
+            name: toolUse.name,
+            arguments: JSON.stringify(toolUse.input),
+            status: "completed",
+          } satisfies ResponseOutputFunctionCall)
+        }
         break
       }
       default:
