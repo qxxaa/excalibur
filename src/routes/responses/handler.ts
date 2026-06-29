@@ -12,6 +12,7 @@ import { handleProviderResponsesForProvider } from "~/routes/provider/responses/
 import { state } from "~/lib/state"
 import {
   createCopilotTokenUsageRecorder,
+  normalizeAnthropicUsage,
   normalizeOptionalToken,
   normalizeResponsesUsage,
   type UsageTokens,
@@ -24,6 +25,9 @@ import {
   type ResponsesResult,
   type ResponseStreamEvent,
 } from "~/services/copilot/create-responses"
+import { createMessages } from "~/services/copilot/create-messages"
+import type { AnthropicStreamEventData } from "~/routes/messages/anthropic-types"
+import { findEndpointModel } from "~/lib/models"
 
 import { createStreamIdTracker, fixStreamIds } from "./stream-id-sync"
 import {
@@ -33,6 +37,14 @@ import {
   getResponsesRequestOptions,
   sanitizeOversizedInputImages,
 } from "./utils"
+import {
+  translateResponsesToMessagesPayload,
+  translateAnthropicResultToResponses,
+} from "./responses-messages-translation"
+import {
+  createMessagesToResponsesStreamState,
+  translateAnthropicStreamToResponsesEvent,
+} from "./responses-messages-stream-translation"
 import consola from "consola"
 
 const logger = createHandlerLogger("responses-handler")
@@ -98,6 +110,15 @@ export const handleResponses = async (c: Context) => {
   const responsesTransport = getResponsesTransportForModel(selectedModel)
 
   if (!responsesTransport) {
+    // Model doesn't support /responses - check if it supports /v1/messages
+    const selectedModelObj = findEndpointModel(payload.model)
+    const supportsMessages =
+      selectedModelObj?.supported_endpoints?.includes("/v1/messages") ?? false
+
+    if (supportsMessages) {
+      return await handleWithMessagesApi(c, payload)
+    }
+
     return c.json(
       {
         error: {
@@ -276,4 +297,116 @@ const getCodexResponsesSubagentMarker = (c: Context): SubagentMarker | null => {
 const getTrimmedHeader = (c: Context, name: string): string | undefined => {
   const value = c.req.header(name)?.trim()
   return value || undefined
+}
+
+// ---------------------------------------------------------------------------
+// Messages API fallback for models that support /v1/messages but not /responses
+// ---------------------------------------------------------------------------
+
+const handleWithMessagesApi = async (c: Context, payload: ResponsesPayload) => {
+  const messagesPayload = translateResponsesToMessagesPayload(payload)
+
+  const requestId = generateRequestIdFromPayload(
+    { messages: payload.input },
+    undefined,
+  )
+  logger.debug("Generated request ID (messages fallback):", requestId)
+
+  const sessionId = getUUID(requestId)
+  logger.debug("Extracted session ID (messages fallback):", sessionId)
+
+  const recordUsage = createCopilotTokenUsageRecorder({
+    endpoint: "messages",
+    fallbackSessionId: sessionId,
+    model: payload.model,
+  })
+
+  debugJson(logger, "Translated Messages payload:", messagesPayload)
+
+  const response = await createMessages(messagesPayload, undefined, {
+    requestId,
+    sessionId,
+  })
+
+  // Non-streaming
+  if (!payload.stream && !isAsyncIterable(response)) {
+    const anthropicResult = response
+    debugJson(logger, "Non-streaming Messages result:", anthropicResult)
+    const responsesResult = translateAnthropicResultToResponses(
+      anthropicResult,
+      payload.model,
+    )
+    recordUsage({
+      ...normalizeAnthropicUsage(anthropicResult.usage),
+      total_nano_aiu: normalizeOptionalToken(
+        anthropicResult.copilot_usage?.total_nano_aiu,
+      ),
+    })
+    debugJson(logger, "Translated Responses result:", responsesResult)
+    return c.json(responsesResult)
+  }
+
+  // Streaming
+  logger.debug("Streaming response from Copilot (Messages API fallback)")
+  return streamSSE(c, async (stream) => {
+    const streamState = createMessagesToResponsesStreamState()
+    let usage: UsageTokens = {}
+
+    for await (const chunk of response as AsyncIterable<{
+      event?: string
+      data?: string
+    }>) {
+      const data = chunk.data
+      if (!data || data === "[DONE]") {
+        continue
+      }
+
+      let parsedEvent: AnthropicStreamEventData | null = null
+      try {
+        parsedEvent = JSON.parse(data) as AnthropicStreamEventData
+      } catch {
+        continue
+      }
+
+      if (!parsedEvent) continue
+
+      // Track usage from message_start and message_delta
+      if (parsedEvent.type === "message_start") {
+        usage = {
+          ...normalizeAnthropicUsage(parsedEvent.message.usage),
+          total_nano_aiu: normalizeOptionalToken(
+            (
+              parsedEvent.message as {
+                copilot_usage?: { total_nano_aiu?: number }
+              }
+            ).copilot_usage?.total_nano_aiu,
+          ),
+        }
+      } else if (parsedEvent.type === "message_delta") {
+        if (parsedEvent.usage) {
+          usage = {
+            ...usage,
+            ...normalizeAnthropicUsage(parsedEvent.usage),
+            total_nano_aiu: normalizeOptionalToken(
+              parsedEvent.copilot_usage?.total_nano_aiu,
+            ),
+          }
+        }
+      }
+
+      const responsesEvents = translateAnthropicStreamToResponsesEvent(
+        parsedEvent,
+        streamState,
+      )
+
+      for (const responseEvent of responsesEvents) {
+        await stream.writeSSE({
+          event: responseEvent.type as string,
+          data: JSON.stringify(responseEvent),
+        })
+      }
+    }
+
+    recordUsage(usage)
+  })
 }
