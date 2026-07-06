@@ -12,6 +12,7 @@ import type {
 import { COMPACT_REQUEST, type CompactType } from "~/lib/compact"
 import {
   getModelResponsesApiCompactThreshold as getConfiguredModelResponsesApiCompactThreshold,
+  getTextVerbosityForModel as getConfiguredTextVerbosityForModel,
   isResponsesApiContextManagementEnabled as isConfiguredResponsesApiContextManagementEnabled,
   isResponsesApiWebSocketEnabled as isConfiguredResponsesApiWebSocketEnabled,
 } from "~/lib/config"
@@ -23,6 +24,7 @@ export const DEFAULT_RESPONSES_COMPACT_THRESHOLD_RATIO = 0.9
 export const responsesUtilsDependencies = {
   getModelResponsesApiCompactThreshold:
     getConfiguredModelResponsesApiCompactThreshold,
+  getTextVerbosityForModel: getConfiguredTextVerbosityForModel,
   isResponsesApiContextManagementEnabled:
     isConfiguredResponsesApiContextManagementEnabled,
   isResponsesApiWebSocketEnabled: isConfiguredResponsesApiWebSocketEnabled,
@@ -414,4 +416,29 @@ const containsVisionContent = (value: unknown): boolean => {
   }
 
   return false
+}
+
+// ---------------------------------------------------------------------------
+// Text verbosity injection
+// ---------------------------------------------------------------------------
+
+export const resolveTextVerbosity = (payload: ResponsesPayload): void => {
+  const existing = (payload.text as Record<string, unknown> | undefined)
+    ?.verbosity
+  if (existing) {
+    // Explicit verbosity in request takes priority
+    return
+  }
+
+  const verbosity = responsesUtilsDependencies.getTextVerbosityForModel(
+    payload.model,
+  )
+  if (!verbosity) {
+    return
+  }
+
+  payload.text = {
+    ...((payload.text as Record<string, unknown>) ?? {}),
+    verbosity,
+  }
 }

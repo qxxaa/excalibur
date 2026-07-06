@@ -40,6 +40,7 @@ import {
   compactInputByLatestCompaction,
   getResponsesTransportForModel,
   getResponsesRequestOptions,
+  resolveTextVerbosity,
   sanitizeOversizedInputImages,
 } from "./utils"
 import {
@@ -165,6 +166,9 @@ export const handleResponses = async (c: Context) => {
   // Smaller than the client compaction threshold, use server-side compaction to maintain cache hit rate
   const maxPromptTokens = selectedModel?.capabilities.limits.max_prompt_tokens
   applyResponsesApiContextManagement(payload, maxPromptTokens, 0.8)
+
+  // Inject text verbosity from config when not already set in the request
+  resolveTextVerbosity(payload)
 
   debugJson(logger, "Translated Responses payload:", payload)
 

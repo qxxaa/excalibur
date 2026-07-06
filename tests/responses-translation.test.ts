@@ -990,4 +990,11 @@ describe("translateResponsesResultToAnthropic", () => {
       },
     ])
   })
+
+  it("injects text.verbosity from config", () => {
+    const result = translateAnthropicMessagesToResponsesPayload(samplePayload)
+
+    expect(result.text).toBeDefined()
+    expect(result.text).toHaveProperty("verbosity")
+  })
 })

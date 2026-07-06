@@ -19,6 +19,7 @@ export interface AppConfig {
     string,
     "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
   >
+  modelTextVerbosity?: Record<string, "low" | "medium" | "high">
   useMessagesApi?: boolean
   useResponsesApiWebSocket?: boolean
   anthropicApiKey?: string
@@ -142,6 +143,10 @@ const defaultConfig: AppConfig = {
     "gpt-5.4": "xhigh",
     "gpt-5.5": "xhigh",
   },
+  modelTextVerbosity: {
+    "gpt-5.4": "low",
+    "gpt-5.5": "low",
+  },
   useMessagesApi: true,
   useResponsesApiWebSocket: true,
   useResponsesApiWebSearch: true,
@@ -255,6 +260,8 @@ function mergeDefaultConfig(config: AppConfig): {
     defaultConfig.modelResponsesApiCompactThresholds ?? {}
   const modelReasoningEfforts = config.modelReasoningEfforts ?? {}
   const defaultModelReasoningEfforts = defaultConfig.modelReasoningEfforts ?? {}
+  const modelTextVerbosity = config.modelTextVerbosity ?? {}
+  const defaultModelTextVerbosity = defaultConfig.modelTextVerbosity ?? {}
 
   const missingExtraPromptModels = Object.keys(defaultExtraPrompts).filter(
     (model) => !Object.hasOwn(extraPrompts, model),
@@ -263,18 +270,23 @@ function mergeDefaultConfig(config: AppConfig): {
   const missingReasoningEffortModels = Object.keys(
     defaultModelReasoningEfforts,
   ).filter((model) => !Object.hasOwn(modelReasoningEfforts, model))
+  const missingTextVerbosityModels = Object.keys(
+    defaultModelTextVerbosity,
+  ).filter((model) => !Object.hasOwn(modelTextVerbosity, model))
   const missingResponsesApiCompactThresholdModels = Object.keys(
     defaultResponsesApiCompactThresholds,
   ).filter((model) => !Object.hasOwn(responsesApiCompactThresholds, model))
 
   const hasExtraPromptChanges = missingExtraPromptModels.length > 0
   const hasReasoningEffortChanges = missingReasoningEffortModels.length > 0
+  const hasTextVerbosityChanges = missingTextVerbosityModels.length > 0
   const hasResponsesApiCompactThresholdChanges =
     missingResponsesApiCompactThresholdModels.length > 0
 
   if (
     !hasExtraPromptChanges
     && !hasReasoningEffortChanges
+    && !hasTextVerbosityChanges
     && !hasResponsesApiCompactThresholdChanges
   ) {
     return { mergedConfig: config, changed: false }
@@ -294,6 +306,10 @@ function mergeDefaultConfig(config: AppConfig): {
       modelReasoningEfforts: {
         ...defaultModelReasoningEfforts,
         ...modelReasoningEfforts,
+      },
+      modelTextVerbosity: {
+        ...defaultModelTextVerbosity,
+        ...modelTextVerbosity,
       },
     },
     changed: true,
@@ -463,6 +479,13 @@ export function getReasoningEffortForModel(
 ): "none" | "minimal" | "low" | "medium" | "high" | "xhigh" {
   const config = getConfig()
   return config.modelReasoningEfforts?.[model] ?? "high"
+}
+
+export function getTextVerbosityForModel(
+  model: string,
+): "low" | "medium" | "high" {
+  const config = getConfig()
+  return config.modelTextVerbosity?.[model] ?? "low"
 }
 
 export function normalizeProviderBaseUrl(url: string): string {

@@ -15,6 +15,7 @@ import { HTTPError } from "~/lib/error"
 import {
   getExtraPromptForModel,
   getReasoningEffortForModel,
+  getTextVerbosityForModel,
 } from "~/lib/config"
 import { requestContext } from "~/lib/request-context"
 import { parseUserIdMetadata } from "~/lib/utils"
@@ -134,6 +135,8 @@ export const translateAnthropicMessagesToResponsesPayload = (
     subagentAgentId,
   )
 
+  const textVerbosity = getTextVerbosityForModel(payload.model)
+
   const responsesPayload: ResponsesPayload = {
     model: payload.model,
     input,
@@ -152,6 +155,7 @@ export const translateAnthropicMessagesToResponsesPayload = (
       effort: getReasoningEffortForModel(payload.model),
       summary: "detailed",
     },
+    text: textVerbosity ? { verbosity: textVerbosity } : undefined,
     include: ["reasoning.encrypted_content"],
   }
 

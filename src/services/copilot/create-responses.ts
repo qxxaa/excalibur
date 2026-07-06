@@ -42,6 +42,7 @@ export interface ResponsesPayload {
   parallel_tool_calls?: boolean | null
   store?: boolean | null
   reasoning?: Reasoning | null
+  text?: ResponseTextConfig | null
   context_management?: Array<ResponseContextManagementItem> | null
   include?: Array<ResponseIncludable>
   service_tier?: string | null // NOTE: Unsupported by GitHub Copilot
@@ -98,6 +99,17 @@ export type ResponseIncludable =
 export interface Reasoning {
   effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | null
   summary?: "auto" | "concise" | "detailed" | null
+}
+
+export type TextVerbosity = "low" | "medium" | "high"
+
+export interface ResponseTextConfig {
+  format?: {
+    type: string
+    schema?: Record<string, unknown>
+    [key: string]: unknown
+  }
+  verbosity?: TextVerbosity
 }
 
 export interface ResponseContextManagementCompactionItem {

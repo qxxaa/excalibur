@@ -778,3 +778,179 @@ describe("responses handler token usage", () => {
     expect(page.items[0]?.total_tokens).toBe(7)
   })
 })
+
+describe("responses handler text verbosity", () => {
+  test("injects text.verbosity from config when request has no text field", async () => {
+    responsesUtilsDependencies.getTextVerbosityForModel = () => "low"
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+
+    const app = createApp()
+    const response = await app.request("/v1/responses", {
+      body: JSON.stringify({
+        input: "hello",
+        model: "gpt-test",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(createResponses).toHaveBeenCalledTimes(1)
+    const forwarded = createResponses.mock.calls[0][0]
+    expect(forwarded.text).toEqual({ verbosity: "low" })
+  })
+
+  test("preserves existing text.format when injecting verbosity", async () => {
+    responsesUtilsDependencies.getTextVerbosityForModel = () => "low"
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+
+    const app = createApp()
+    const response = await app.request("/v1/responses", {
+      body: JSON.stringify({
+        input: "hello",
+        model: "gpt-test",
+        text: {
+          format: {
+            type: "json_schema",
+            name: "result",
+            schema: { type: "object" },
+          },
+        },
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(createResponses).toHaveBeenCalledTimes(1)
+    const forwarded = createResponses.mock.calls[0][0]
+    expect(forwarded.text).toEqual({
+      format: {
+        type: "json_schema",
+        name: "result",
+        schema: { type: "object" },
+      },
+      verbosity: "low",
+    })
+  })
+
+  test("does not override explicit text.verbosity from request", async () => {
+    responsesUtilsDependencies.getTextVerbosityForModel = () => "low"
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+
+    const app = createApp()
+    const response = await app.request("/v1/responses", {
+      body: JSON.stringify({
+        input: "hello",
+        model: "gpt-test",
+        text: {
+          format: { type: "text" },
+          verbosity: "high",
+        },
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(createResponses).toHaveBeenCalledTimes(1)
+    const forwarded = createResponses.mock.calls[0][0]
+    expect(forwarded.text).toEqual({
+      format: { type: "text" },
+      verbosity: "high",
+    })
+  })
+
+  test("returns config-driven verbosity per model", async () => {
+    responsesUtilsDependencies.getTextVerbosityForModel = (model) =>
+      model === "gpt-test" ? "medium" : "low"
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+
+    const app = createApp()
+    const response = await app.request("/v1/responses", {
+      body: JSON.stringify({
+        input: "hello",
+        model: "gpt-test",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(createResponses).toHaveBeenCalledTimes(1)
+    const forwarded = createResponses.mock.calls[0][0]
+    expect(forwarded.text).toEqual({ verbosity: "medium" })
+  })
+
+  test("injects verbosity when text is explicitly null", async () => {
+    responsesUtilsDependencies.getTextVerbosityForModel = () => "low"
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+
+    const app = createApp()
+    const response = await app.request("/v1/responses", {
+      body: JSON.stringify({
+        input: "hello",
+        model: "gpt-test",
+        text: null,
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(createResponses).toHaveBeenCalledTimes(1)
+    const forwarded = createResponses.mock.calls[0][0]
+    expect(forwarded.text).toEqual({ verbosity: "low" })
+  })
+
+  test("overwrites null text.verbosity with config value", async () => {
+    responsesUtilsDependencies.getTextVerbosityForModel = () => "low"
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+
+    const app = createApp()
+    const response = await app.request("/v1/responses", {
+      body: JSON.stringify({
+        input: "hello",
+        model: "gpt-test",
+        text: {
+          format: { type: "text" },
+          verbosity: null,
+        },
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(createResponses).toHaveBeenCalledTimes(1)
+    const forwarded = createResponses.mock.calls[0][0]
+    expect(forwarded.text).toEqual({
+      format: { type: "text" },
+      verbosity: "low",
+    })
+  })
+})

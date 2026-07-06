@@ -6,7 +6,10 @@
  * translator in routes/messages/responses-translation.ts.
  */
 
-import { getReasoningEffortForModel } from "~/lib/config"
+import {
+  getReasoningEffortForModel,
+  getTextVerbosityForModel,
+} from "~/lib/config"
 import type {
   ChatCompletionResponse,
   ChatCompletionsPayload,
@@ -27,6 +30,7 @@ import type {
   ResponsesPayload,
   ResponsesResult,
   ResponseUsage,
+  TextVerbosity,
   ToolChoiceFunction,
   ToolChoiceOptions,
 } from "~/services/copilot/create-responses"
@@ -56,7 +60,7 @@ export const translateCompletionsToResponsesPayload = (
     reasoning:
       reasoningEffort ? ({ effort: reasoningEffort } as Reasoning) : undefined,
     store: false,
-    text: translateResponseFormat(payload.response_format),
+    text: resolveTextConfig(payload),
   }
 
   return responsesPayload
@@ -435,6 +439,31 @@ const resolveReasoningEffort = (
   }
   // Fall back to per-model config
   return getReasoningEffortForModel(payload.model)
+}
+
+// ---------------------------------------------------------------------------
+// Text config (format + verbosity)
+// ---------------------------------------------------------------------------
+
+type ResponseTextConfigWithVerbosity = {
+  format?: TextFormat["format"]
+  verbosity?: TextVerbosity
+}
+
+const resolveTextConfig = (
+  payload: ChatCompletionsPayload,
+): ResponseTextConfigWithVerbosity | undefined => {
+  const formatConfig = translateResponseFormat(payload.response_format)
+  const verbosity = getTextVerbosityForModel(payload.model)
+
+  if (!formatConfig && !verbosity) {
+    return undefined
+  }
+
+  return {
+    ...(formatConfig ?? {}),
+    ...(verbosity ? { verbosity } : {}),
+  }
 }
 
 // ---------------------------------------------------------------------------

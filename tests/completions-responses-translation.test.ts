@@ -351,9 +351,9 @@ describe("translateCompletionsToResponsesPayload", () => {
         }),
       )
 
-      const text = result.text as { format: Record<string, unknown> }
-      expect(text).toEqual({
+      expect(result.text).toEqual({
         format: { type: "json_object" },
+        verbosity: "low",
       })
     })
 
@@ -407,10 +407,10 @@ describe("translateCompletionsToResponsesPayload", () => {
       expect(text.format.strict).toBe(true)
     })
 
-    it("returns undefined when response_format is absent", () => {
+    it("returns verbosity-only text when response_format is absent", () => {
       const result = translateCompletionsToResponsesPayload(basePayload())
 
-      expect(result.text).toBeUndefined()
+      expect(result.text).toEqual({ verbosity: "low" })
     })
   })
 
@@ -837,6 +837,37 @@ describe("translateCompletionsToResponsesPayload", () => {
 
       expect(result.reasoning).toBeDefined()
       expect(result.reasoning!.effort).toBeTruthy()
+    })
+  })
+
+  describe("text verbosity", () => {
+    it("injects text.verbosity from config when no response_format", () => {
+      // getTextVerbosityForModel defaults to "low" for all models
+      const result = translateCompletionsToResponsesPayload(basePayload())
+
+      expect(result.text).toBeDefined()
+      expect(result.text).toHaveProperty("verbosity", "low")
+    })
+
+    it("merges verbosity with response_format", () => {
+      const result = translateCompletionsToResponsesPayload(
+        basePayload({
+          response_format: {
+            type: "json_schema",
+            json_schema: {
+              name: "test",
+              schema: { type: "object", properties: {} },
+            },
+          },
+        }),
+      )
+
+      const text = result.text as {
+        format: Record<string, unknown>
+        verbosity: string
+      }
+      expect(text.format.type).toBe("json_schema")
+      expect(text.verbosity).toBe("low")
     })
   })
 
