@@ -1489,7 +1489,7 @@ describe("Responses Lite to Messages translation", () => {
     ).toEqual({ effort: "max" })
   })
 
-  test("appends a JSON schema instruction as the trailing user message", () => {
+  test("enforces json_schema via synthetic structured_response tool without prose instruction", () => {
     const translation = translate({
       input: [{ role: "user", content: "Give me a title", type: "message" }],
       text: {
@@ -1509,14 +1509,16 @@ describe("Responses Lite to Messages translation", () => {
       },
     })
 
+    expect(translation.forcedToolName).toBe("structured_response")
+    expect(translation.messagesPayload.tool_choice).toEqual({
+      type: "tool",
+      name: "structured_response",
+    })
     const text = trailingUserMessageText(translation)
-    expect(text).toContain('"codex_output_schema"')
-    expect(text).toContain('"minLength": 1')
-    expect(text).toContain("Do not wrap the JSON")
-    expect(text).not.toContain("Do not call any tools")
+    expect(text).toBe("Give me a title")
   })
 
-  test("preserves tool_choice for schema output with registered tools", () => {
+  test("forces structured_response tool_choice for schema output alongside registered tools", () => {
     for (const toolChoice of ["auto", "required"] as const) {
       const translation = translate({
         input: [{ role: "user", content: "Give me a title", type: "message" }],
@@ -1537,13 +1539,13 @@ describe("Responses Lite to Messages translation", () => {
         },
       })
 
-      expect(translation.messagesPayload.tools).toHaveLength(1)
+      expect(translation.messagesPayload.tools).toHaveLength(2)
       expect(translation.messagesPayload.tool_choice).toEqual({
-        type: toolChoice === "required" ? "any" : toolChoice,
+        type: "tool",
+        name: "structured_response",
       })
       const text = trailingUserMessageText(translation)
-      expect(text).toContain('"codex_output_schema"')
-      expect(text).not.toContain("Do not call any tools")
+      expect(text).toBe("Give me a title")
     }
   })
 
