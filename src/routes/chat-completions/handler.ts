@@ -4,23 +4,43 @@ import type { Context } from "hono"
 import { streamSSE, type SSEMessage } from "hono/streaming"
 
 import { resolveMappedModel } from "~/lib/config"
-import { createHandlerLogger, debugJson } from "~/lib/logger"
+import { createHandlerLogger, debugJson, debugLazy } from "~/lib/logger"
 import { findEndpointModel } from "~/lib/models"
 import { resolveConfiguredProviderModelAlias } from "~/lib/provider-resolver"
 import {
   createCopilotTokenUsageRecorder,
   normalizeOpenAIUsage,
   normalizeOptionalToken,
+  normalizeResponsesUsage,
   type UsageTokens,
 } from "~/lib/token-usage"
-import { generateRequestIdFromPayload, getUUID, isNullish } from "~/lib/utils"
+import {
+  generateRequestIdFromPayload,
+  getUUID,
+  isAsyncIterable,
+  isNullish,
+} from "~/lib/utils"
 import { handleProviderChatCompletionsForProvider } from "~/routes/provider/chat-completions/handler"
 import type {
   ChatCompletionChunk,
   ChatCompletionResponse,
   ChatCompletionsPayload,
 } from "~/lib/types/chat-completions"
+import type { ResponseStreamEvent } from "~/lib/types/responses"
 import { createChatCompletions } from "~/services/copilot/create-chat-completions"
+import { createResponses } from "~/services/copilot/create-responses"
+import {
+  getResponsesTransportForModel,
+  getResponsesRequestOptions,
+} from "~/routes/responses/utils"
+import {
+  translateCompletionsToResponsesPayload,
+  translateResponsesResultToCompletions,
+} from "./completions-responses-translation"
+import {
+  createCompletionsStreamState,
+  translateResponsesStreamEventToCompletions,
+} from "./completions-responses-stream-translation"
 
 const logger = createHandlerLogger("chat-completions-handler")
 
@@ -66,6 +86,14 @@ export async function handleCompletion(c: Context) {
       payload.max_completion_tokens = payload.max_tokens
     }
     delete payload.max_tokens
+  }
+
+  // Check if this model requires the Responses API (supports /responses but NOT /chat/completions)
+  const responsesTransport = getResponsesTransportForModel(selectedModel)
+  const supportsChatCompletions =
+    selectedModel?.supported_endpoints?.includes("/chat/completions") ?? false
+  if (responsesTransport && !supportsChatCompletions) {
+    return await handleWithResponsesApi(c, payload)
   }
 
   // not support subagent marker for now , set sessionId = getUUID(requestId)
@@ -117,6 +145,113 @@ export async function handleCompletion(c: Context) {
     recordUsage(usage)
   })
 }
+
+// ---------------------------------------------------------------------------
+// Responses API flow for models that don't support /chat/completions
+// ---------------------------------------------------------------------------
+
+const handleWithResponsesApi = async (
+  c: Context,
+  payload: ChatCompletionsPayload,
+) => {
+  const responsesPayload = translateCompletionsToResponsesPayload(payload)
+
+  const requestId = generateRequestIdFromPayload(payload)
+  logger.debug("Generated request ID (responses flow):", requestId)
+
+  const sessionId = getUUID(requestId)
+  logger.debug("Extracted session ID (responses flow):", sessionId)
+
+  const recordUsage = createCopilotTokenUsageRecorder({
+    endpoint: "responses",
+    fallbackSessionId: sessionId,
+    model: payload.model,
+  })
+
+  debugJson(logger, "Translated Responses payload:", responsesPayload)
+
+  const { vision, initiator } = getResponsesRequestOptions(responsesPayload)
+  const selectedModel = findEndpointModel(payload.model)
+  const transport = getResponsesTransportForModel(selectedModel) ?? "http"
+
+  const response = await createResponses(responsesPayload, {
+    vision,
+    initiator,
+    requestId,
+    sessionId,
+    transport,
+  })
+
+  // Non-streaming
+  if (!payload.stream && !isAsyncIterable(response)) {
+    const result = response
+    debugJson(logger, "Non-streaming Responses result:", result)
+    const completionResponse = translateResponsesResultToCompletions(result)
+    recordUsage({
+      ...normalizeResponsesUsage(result.usage),
+      total_nano_aiu: normalizeOptionalToken(
+        result.copilot_usage?.total_nano_aiu,
+      ),
+    })
+    debugJson(logger, "Translated Completions response:", completionResponse)
+    return c.json(completionResponse)
+  }
+
+  // Streaming
+  logger.debug("Streaming response from Copilot (Responses API)")
+  return streamSSE(c, async (stream) => {
+    const streamState = createCompletionsStreamState()
+    let usage: UsageTokens = {}
+
+    for await (const chunk of response as AsyncIterable<{
+      data?: string
+      event?: string
+    }>) {
+      const eventName = chunk.event
+      if (eventName === "ping") {
+        continue
+      }
+
+      const data = chunk.data
+      if (!data) {
+        continue
+      }
+
+      debugLazy(logger, () => ["Responses raw stream event:", data])
+
+      const responseEvent = JSON.parse(data) as ResponseStreamEvent
+      if (
+        responseEvent.type === "response.completed"
+        || responseEvent.type === "response.failed"
+        || responseEvent.type === "response.incomplete"
+      ) {
+        usage = {
+          ...normalizeResponsesUsage(responseEvent.response.usage),
+          total_nano_aiu: normalizeOptionalToken(
+            responseEvent.copilot_usage?.total_nano_aiu,
+          ),
+        }
+      }
+
+      const sseMessages = translateResponsesStreamEventToCompletions(
+        responseEvent,
+        streamState,
+      )
+      for (const msg of sseMessages) {
+        if (msg.data) {
+          debugLazy(logger, () => ["Translated Completions chunk:", msg.data])
+          await stream.writeSSE(msg as SSEMessage)
+        }
+      }
+    }
+
+    recordUsage(usage)
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 const isNonStreaming = (
   response: Awaited<ReturnType<typeof createChatCompletions>>,
