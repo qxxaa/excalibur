@@ -9,6 +9,7 @@ import { findEndpointModel } from "~/lib/models"
 import { resolveConfiguredProviderModelAlias } from "~/lib/provider-resolver"
 import {
   createCopilotTokenUsageRecorder,
+  normalizeAnthropicUsage,
   normalizeOpenAIUsage,
   normalizeOptionalToken,
   normalizeResponsesUsage,
@@ -27,8 +28,10 @@ import type {
   ChatCompletionsPayload,
 } from "~/lib/types/chat-completions"
 import type { ResponseStreamEvent } from "~/lib/types/responses"
+import type { AnthropicStreamEventData } from "~/lib/types/anthropic"
 import { createChatCompletions } from "~/services/copilot/create-chat-completions"
 import { createResponses } from "~/services/copilot/create-responses"
+import { createMessages } from "~/services/copilot/create-messages"
 import {
   getResponsesTransportForModel,
   getResponsesRequestOptions,
@@ -41,6 +44,14 @@ import {
   createCompletionsStreamState,
   translateResponsesStreamEventToCompletions,
 } from "./completions-responses-stream-translation"
+import {
+  translateCompletionsToMessagesPayload,
+  translateAnthropicResultToCompletions,
+} from "./completions-messages-translation"
+import {
+  createCompletionsFromMessagesStreamState,
+  translateAnthropicStreamToCompletions,
+} from "./completions-messages-stream-translation"
 
 const logger = createHandlerLogger("chat-completions-handler")
 
@@ -94,6 +105,16 @@ export async function handleCompletion(c: Context) {
     selectedModel?.supported_endpoints?.includes("/chat/completions") ?? false
   if (responsesTransport && !supportsChatCompletions) {
     return await handleWithResponsesApi(c, payload)
+  }
+
+  // Prefer Messages over native completions when available (mirrors upstream
+  // Responses handler). The Messages path supports forced tool_use for
+  // structured output enforcement, which Copilot's completions endpoint
+  // silently drops for non-GPT models.
+  const supportsMessages =
+    selectedModel?.supported_endpoints?.includes("/v1/messages") ?? false
+  if (supportsMessages) {
+    return await handleWithMessagesApi(c, payload)
   }
 
   // not support subagent marker for now , set sessionId = getUUID(requestId)
@@ -270,4 +291,119 @@ const parseChatCompletionChunk = (
   } catch {
     return null
   }
+}
+
+// ---------------------------------------------------------------------------
+// Messages API flow for models that only support /v1/messages
+// ---------------------------------------------------------------------------
+
+const handleWithMessagesApi = async (
+  c: Context,
+  payload: ChatCompletionsPayload,
+) => {
+  const messagesPayload = translateCompletionsToMessagesPayload(payload)
+
+  // Detect if we injected a synthetic tool for structured output
+  const rf = payload.response_format
+  const forcedToolName =
+    rf && rf.type === "json_schema" ? "structured_response" : undefined
+
+  const requestId = generateRequestIdFromPayload(payload)
+  logger.debug("Generated request ID (messages flow):", requestId)
+
+  const sessionId = getUUID(requestId)
+  logger.debug("Extracted session ID (messages flow):", sessionId)
+
+  const recordUsage = createCopilotTokenUsageRecorder({
+    endpoint: "messages",
+    fallbackSessionId: sessionId,
+    model: payload.model,
+  })
+
+  debugJson(logger, "Translated Messages payload:", messagesPayload)
+
+  const response = await createMessages(messagesPayload, undefined, {
+    requestId,
+    sessionId,
+  })
+
+  // Non-streaming
+  if (!payload.stream && !isAsyncIterable(response)) {
+    const anthropicResult = response
+    debugJson(logger, "Non-streaming Messages result:", anthropicResult)
+    const completionResponse = translateAnthropicResultToCompletions(
+      anthropicResult,
+      forcedToolName,
+    )
+    recordUsage({
+      ...normalizeAnthropicUsage(anthropicResult.usage),
+      total_nano_aiu: normalizeOptionalToken(
+        anthropicResult.copilot_usage?.total_nano_aiu,
+      ),
+    })
+    debugJson(logger, "Translated Completions response:", completionResponse)
+    return c.json(completionResponse)
+  }
+
+  // Streaming
+  logger.debug("Streaming response from Copilot (Messages API)")
+  return streamSSE(c, async (stream) => {
+    const streamState = createCompletionsFromMessagesStreamState(forcedToolName)
+    let usage: UsageTokens = {}
+
+    for await (const chunk of response as AsyncIterable<{
+      event?: string
+      data?: string
+    }>) {
+      const data = chunk.data
+      if (!data || data === "[DONE]") {
+        continue
+      }
+
+      let parsedEvent: AnthropicStreamEventData | null = null
+      try {
+        parsedEvent = JSON.parse(data) as AnthropicStreamEventData
+      } catch {
+        continue
+      }
+
+      if (!parsedEvent) continue
+
+      // Track usage
+      if (parsedEvent.type === "message_start") {
+        usage = {
+          ...normalizeAnthropicUsage(parsedEvent.message.usage),
+          total_nano_aiu: normalizeOptionalToken(
+            (
+              parsedEvent.message as {
+                copilot_usage?: { total_nano_aiu?: number }
+              }
+            ).copilot_usage?.total_nano_aiu,
+          ),
+        }
+      } else if (parsedEvent.type === "message_delta") {
+        if (parsedEvent.usage) {
+          usage = {
+            ...usage,
+            ...normalizeAnthropicUsage(parsedEvent.usage),
+            total_nano_aiu: normalizeOptionalToken(
+              parsedEvent.copilot_usage?.total_nano_aiu,
+            ),
+          }
+        }
+      }
+
+      const sseMessages = translateAnthropicStreamToCompletions(
+        parsedEvent,
+        streamState,
+      )
+      for (const msg of sseMessages) {
+        if (msg.data) {
+          await stream.writeSSE(msg as SSEMessage)
+        }
+      }
+    }
+
+    recordUsage(usage)
+  })
 }
