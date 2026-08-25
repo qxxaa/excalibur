@@ -93,12 +93,16 @@ export interface MessagesToolRegistry {
   tools: Array<AnthropicTool>
 }
 
+// Name of the synthetic tool used for structured output enforcement
+const STRUCTURED_TOOL_NAME = "structured_response"
+
 export interface ResponsesToMessagesTranslation {
   compaction: boolean
   messagesPayload: AnthropicMessagesPayload
   originalPayload: ResponsesPayload
   publicModel: string
   registry: MessagesToolRegistry
+  forcedToolName?: string
 }
 
 export type MessagesResponseTranslationContext = Omit<
@@ -170,8 +174,36 @@ export function translateResponsesToMessages(
     ...(metadataUserId ? { metadata: { user_id: metadataUserId } } : {}),
   }
 
+  // Inject synthetic forced tool for structured output (text.format.json_schema)
+  const textFormat = (
+    payload.text as
+      | {
+          format?: {
+            type: string
+            name?: string
+            schema?: Record<string, unknown>
+          }
+        }
+      | undefined
+  )?.format
+  let forcedToolName: string | undefined
+  if (textFormat?.type === "json_schema" && textFormat.schema) {
+    const syntheticTool: AnthropicTool = {
+      name: STRUCTURED_TOOL_NAME,
+      description: "Return the structured response.",
+      input_schema: textFormat.schema,
+    }
+    messagesPayload.tools = [...(messagesPayload.tools ?? []), syntheticTool]
+    messagesPayload.tool_choice = {
+      type: "tool",
+      name: STRUCTURED_TOOL_NAME,
+    }
+    forcedToolName = STRUCTURED_TOOL_NAME
+  }
+
   return {
     compaction: normalized.compaction,
+    forcedToolName,
     messagesPayload,
     originalPayload: payload,
     publicModel: options.publicModel ?? payload.model,
@@ -184,20 +216,61 @@ export function translateAnthropicToResponses(
   context: MessagesResponseTranslationContext,
 ): ResponsesResult {
   const finish = translateStopReason(response.stop_reason)
-  const output =
-    context.compaction ?
-      translateCompactionOutput(response)
-    : translateAssistantOutput(response, context.registry)
-  const outputText =
-    context.compaction ? "" : extractAnthropicResponseText(response)
+
+  // Unwrap synthetic forced tool for structured output
+  let output: Array<ResponseOutputItem>
+  let outputText: string
+  if (context.forcedToolName && !context.compaction) {
+    let structuredText = ""
+    const realOutput: Array<ResponseOutputItem> = []
+    for (const block of response.content) {
+      if (block.type === "tool_use" && block.name === context.forcedToolName) {
+        structuredText += JSON.stringify(block.input)
+      } else if (block.type === "tool_use") {
+        realOutput.push(
+          ...translateAssistantOutput(
+            { ...response, content: [block] },
+            context.registry,
+          ),
+        )
+      }
+    }
+    if (structuredText) {
+      realOutput.unshift({
+        type: "message",
+        id: `msg_${Date.now()}`,
+        status: "completed",
+        role: "assistant",
+        content: [
+          { type: "output_text", text: structuredText, annotations: [] },
+        ],
+      } as ResponseOutputItem)
+    }
+    output = realOutput
+    outputText = structuredText
+  } else {
+    output =
+      context.compaction ?
+        translateCompactionOutput(response)
+      : translateAssistantOutput(response, context.registry)
+    outputText =
+      context.compaction ? "" : extractAnthropicResponseText(response)
+  }
+
+  const suppressToolStop =
+    context.forcedToolName !== undefined && finish.status === "completed"
+  const finalFinish =
+    suppressToolStop ?
+      { status: "completed" as const, incompleteReason: undefined }
+    : finish
 
   return createMessagesBackedResponsesResult({
     context,
     id: toResponseId(response.id),
     output,
     outputText,
-    status: finish.status,
-    incompleteReason: finish.incompleteReason,
+    status: finalFinish.status,
+    incompleteReason: finalFinish.incompleteReason,
     usage: translateAnthropicUsage(response.usage),
     copilotUsage: response.copilot_usage,
   })

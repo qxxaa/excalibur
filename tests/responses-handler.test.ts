@@ -306,7 +306,7 @@ describe("responses handler token usage", () => {
     })
   })
 
-  test("rejects gpt-prefixed models without Responses endpoint support for Codex clients", async () => {
+  test("rejects models without any supported endpoint for Codex clients", async () => {
     state.models = {
       object: "list",
       data: [
@@ -319,12 +319,12 @@ describe("responses handler token usage", () => {
             tokenizer: "o200k_base",
             type: "chat",
           },
-          id: "gpt-messages-only",
+          id: "gpt-no-endpoints",
           model_picker_enabled: true,
-          name: "GPT Messages Only",
+          name: "GPT No Endpoints",
           object: "model",
           preview: false,
-          supported_endpoints: ["/v1/messages", "/chat/completions"],
+          supported_endpoints: [],
           vendor: "openai",
           version: "test",
         },
@@ -338,7 +338,7 @@ describe("responses handler token usage", () => {
 
     const response = await createApp().request("/v1/responses", {
       body: JSON.stringify({
-        model: "gpt-messages-only",
+        model: "gpt-no-endpoints",
         input: "hello",
       }),
       headers: {

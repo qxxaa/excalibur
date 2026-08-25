@@ -474,6 +474,40 @@ function* startContentBlock(
   }
 
   if (block.type === "tool_use") {
+    // Synthetic forced tool for structured output - treat as text output
+    if (
+      state.context.forcedToolName
+      && block.name === state.context.forcedToolName
+    ) {
+      const item: ResponseOutputMessage = {
+        id: `msg_${state.responseId.slice(-18)}_${event.index}`,
+        type: "message",
+        role: "assistant",
+        status: "in_progress",
+        content: [{ type: "output_text", text: "", annotations: [] }],
+      }
+      const output = addOutput(state, item)
+      state.blocks.set(event.index, {
+        ...output,
+        type: "message",
+        text: "",
+        done: false,
+      })
+      yield createEvent(state, {
+        type: "response.output_item.added",
+        output_index: output.outputIndex,
+        item: structuredClone(item),
+      })
+      yield createEvent(state, {
+        type: "response.content_part.added",
+        item_id: item.id,
+        output_index: output.outputIndex,
+        content_index: 0,
+        part: { type: "output_text", text: "", annotations: [] },
+      })
+      return
+    }
+
     const descriptor = resolveToolDescriptor(state.context.registry, block.name)
     const common = {
       id: `fc_${state.responseId.slice(-18)}_${event.index}`,
@@ -589,6 +623,20 @@ function* translateContentDelta(
     block.signature += event.delta.signature
     block.item.encrypted_content =
       block.signature || EMPTY_SIGNATURE_ENCRYPTED_CONTENT
+    return
+  }
+
+  if (event.delta.type === "input_json_delta" && block.type === "message") {
+    // Synthetic tool unwrapping: emit tool input as text content
+    block.text += event.delta.partial_json
+    state.outputText += event.delta.partial_json
+    yield createEvent(state, {
+      type: "response.output_text.delta",
+      item_id: block.item.id,
+      output_index: block.outputIndex,
+      content_index: 0,
+      delta: event.delta.partial_json,
+    })
     return
   }
 
