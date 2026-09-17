@@ -28,6 +28,28 @@ export interface CreateServerOptions {
   getApiKeys?: () => Array<string>
 }
 
+const usageViewerAssets = new Map([
+  ["viewer.js", "text/javascript; charset=utf-8"],
+  ["icons.js", "text/javascript; charset=utf-8"],
+  ["viewer.css", "text/css; charset=utf-8"],
+  ["utilities.css", "text/css; charset=utf-8"],
+])
+
+// Inline styles are used for chart geometry; inline scripts remain forbidden.
+// External API origins remain available only after explicit viewer approval.
+const usageViewerPolicy = [
+  "default-src 'none'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self'",
+  "font-src 'self'",
+  "connect-src 'self' http: https:",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+].join("; ")
+
 function resolveSameOriginCorsOrigin(
   origin: string,
   context: Context,
@@ -56,7 +78,14 @@ export function createServer(options: CreateServerOptions = {}): Hono {
     "*",
     createAuthMiddleware({
       getApiKeys: options.getApiKeys,
-      allowUnauthenticatedPaths: ["/", "/usage-viewer", "/usage-viewer/"],
+      allowUnauthenticatedPaths: [
+        "/",
+        "/usage-viewer",
+        "/usage-viewer/",
+        ...[...usageViewerAssets.keys()].map(
+          (name) => `/usage-viewer-assets/${name}`,
+        ),
+      ],
       shouldSkipPath: (path) => path.startsWith("/admin/"),
       allowWhenNoApiKeys: !networkExposed,
     }),
@@ -73,9 +102,28 @@ export function createServer(options: CreateServerOptions = {}): Hono {
   server.get("/", (c) => c.text("Server running"))
   server.get("/usage-viewer", (c) => {
     const usageViewerFileUrl = new URL("../pages/index.html", import.meta.url)
+    c.header("Content-Security-Policy", usageViewerPolicy)
+    c.header("Referrer-Policy", "no-referrer")
+    c.header("X-Content-Type-Options", "nosniff")
+    c.header("Cache-Control", "no-store")
     return c.html(readFileSync(usageViewerFileUrl, "utf8"))
   })
   server.get("/usage-viewer/", (c) => c.redirect("/usage-viewer", 301))
+
+  // Fixed paths only: never use request input to resolve filesystem assets.
+  for (const [name, contentType] of usageViewerAssets) {
+    server.get(`/usage-viewer-assets/${name}`, (c) => {
+      c.header("Content-Type", contentType)
+      c.header("X-Content-Type-Options", "nosniff")
+      c.header("Cache-Control", "no-cache")
+      return c.body(
+        readFileSync(
+          new URL(`../pages/usage-viewer-assets/${name}`, import.meta.url),
+          "utf8",
+        ),
+      )
+    })
+  }
 
   server.route("/chat/completions", completionRoutes)
   server.route("/admin/config", configRoutes)

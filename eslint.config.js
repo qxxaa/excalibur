@@ -11,7 +11,9 @@ import tseslint from "typescript-eslint"
 const configDir = dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig(
-  { ignores: ["plugin/**", "desktop/**"] },
+  {
+    ignores: ["plugin/**", "desktop/**", "pages/usage-viewer-assets/icons.js"],
+  },
   { linterOptions: { reportUnusedDisableDirectives: "off" } },
   gitignore(),
   eslint.configs.recommended,
@@ -53,6 +55,17 @@ export default defineConfig(
         },
       ],
       "unused-imports/no-unused-imports": "error",
+    },
+  },
+  {
+    files: [
+      "pages/usage-viewer-assets/viewer.js",
+      "pages/usage-viewer-assets/*.mjs",
+    ],
+    extends: [tseslint.configs.disableTypeChecked],
+    languageOptions: {
+      parserOptions: { projectService: false },
+      globals: { lucide: "readonly" },
     },
   },
 )

@@ -4,7 +4,14 @@ import { readFile } from "node:fs/promises"
 const pagePath = new URL("../pages/index.html", import.meta.url)
 
 async function readUsageViewerPage(): Promise<string> {
-  return readFile(pagePath, "utf8")
+  const [html, script] = await Promise.all([
+    readFile(pagePath, "utf8"),
+    readFile(
+      new URL("../pages/usage-viewer-assets/viewer.js", import.meta.url),
+      "utf8",
+    ),
+  ])
+  return `${html}\n${script}`
 }
 
 describe("usage viewer period contract", () => {
