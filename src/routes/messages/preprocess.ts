@@ -956,6 +956,15 @@ export const prepareMessagesApiPayload = (
   // Using tool_choice: {"type": "any"} or tool_choice: {"type": "tool", "name": "..."} will result in an error because these options force tool use, which is incompatible with extended thinking.
   const toolChoice = payload.tool_choice
   const disableThink = toolChoice?.type === "any" || toolChoice?.type === "tool"
+  if (disableThink) {
+    delete payload.thinking
+    if (payload.output_config?.effort) {
+      delete payload.output_config.effort
+      if (Object.keys(payload.output_config).length === 0) {
+        delete payload.output_config
+      }
+    }
+  }
 
   if (selectedModel?.capabilities.supports.adaptive_thinking && !disableThink) {
     payload.thinking = {

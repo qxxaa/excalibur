@@ -102,6 +102,49 @@ describe("translateResponsesToCompletionsPayload", () => {
     expect(result.messages[2].content).toBe("Sunny, 22C")
   })
 
+  it("coalesces assistant text and parallel function_call items into one assistant message", () => {
+    const payload: ResponsesPayload = {
+      model: "gemini-3.5-flash",
+      input: [
+        { role: "user", content: "Check London and Paris" },
+        { role: "assistant", content: "Checking both cities." },
+        {
+          type: "function_call",
+          call_id: "call_1",
+          name: "get_weather",
+          arguments: '{"location":"London"}',
+          status: "completed",
+        },
+        {
+          type: "function_call",
+          call_id: "call_2",
+          name: "get_weather",
+          arguments: '{"location":"Paris"}',
+          status: "completed",
+        },
+        {
+          type: "function_call_output",
+          call_id: "call_1",
+          output: "Sunny",
+        },
+        {
+          type: "function_call_output",
+          call_id: "call_2",
+          output: "Rainy",
+        },
+      ],
+    }
+
+    const result = translateResponsesToCompletionsPayload(payload)
+
+    expect(result.messages).toHaveLength(4)
+    expect(result.messages[1].role).toBe("assistant")
+    expect(result.messages[1].content).toBe("Checking both cities.")
+    expect(result.messages[1].tool_calls).toHaveLength(2)
+    expect(result.messages[1].tool_calls![0].id).toBe("call_1")
+    expect(result.messages[1].tool_calls![1].id).toBe("call_2")
+  })
+
   it("translates function tools", () => {
     const payload: ResponsesPayload = {
       model: "gemini-3.5-flash",

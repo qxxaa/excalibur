@@ -633,6 +633,8 @@ function* translateContentDelta(
   if (event.delta.type === "input_json_delta" && block.type === "message") {
     // Synthetic tool unwrapping: emit tool input as text content
     block.text += event.delta.partial_json
+    const part = block.item.content?.[0]
+    if (part?.type === "output_text") part.text = block.text
     state.outputText += event.delta.partial_json
     yield createEvent(state, {
       type: "response.output_text.delta",

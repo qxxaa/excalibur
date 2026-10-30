@@ -181,6 +181,38 @@ describe("sanitizeUnsupportedInputFields", () => {
     ).toBeUndefined()
   })
 
+  test("removes replayed message item ids while preserving reasoning item ids", () => {
+    const payload = {
+      input: [
+        {
+          content: [{ text: "hello", type: "input_text" }],
+          id: "msg_user_1",
+          role: "user",
+          type: "message",
+        },
+        {
+          encrypted_content: "enc-1",
+          id: "rs_1",
+          summary: [],
+          type: "reasoning",
+        },
+        {
+          content: [{ text: "world", type: "output_text" }],
+          id: "msg_assistant_1",
+          role: "assistant",
+          type: "message",
+        },
+      ],
+      model: "gpt-5.5",
+    } as unknown as ResponsesPayload
+
+    expect(sanitizeUnsupportedInputFields(payload)).toBe(2)
+    const items = payload.input as Array<Record<string, unknown>>
+    expect(items[0].id).toBeUndefined()
+    expect(items[1].id).toBe("rs_1")
+    expect(items[2].id).toBeUndefined()
+  })
+
   test("returns zero when input is missing or unsupported fields are absent", () => {
     expect(
       sanitizeUnsupportedInputFields({ model: "gpt-5.5" } as ResponsesPayload),

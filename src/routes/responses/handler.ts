@@ -69,6 +69,7 @@ import consola from "consola"
 const logger = createHandlerLogger("responses-handler")
 
 export const responsesHandlerDependencies = {
+  createChatCompletions,
   createResponses: createCopilotResponses,
   findEndpointModel,
   isResponsesApiWebSearchEnabled: isConfiguredResponsesApiWebSearchEnabled,
@@ -247,7 +248,10 @@ export const handleResponses = async (c: Context) => {
 
   const { vision, initiator: inferredInitiator } =
     getResponsesRequestOptions(payload)
-  const initiator = subagentMarker ? "agent" : inferredInitiator
+  const explicitAgentInitiator =
+    getTrimmedHeader(c, "x-initiator")?.toLowerCase() === "agent"
+  const initiator =
+    subagentMarker || explicitAgentInitiator ? "agent" : inferredInitiator
 
   const response = await responsesHandlerDependencies.createResponses(payload, {
     vision,
@@ -337,10 +341,7 @@ const shouldFallbackToMessages = (
   }
 
   const supportedEndpoints = selectedModel?.supported_endpoints ?? []
-  return (
-    supportedEndpoints.includes("/v1/messages")
-    || supportedEndpoints.includes("/chat/completions")
-  )
+  return supportedEndpoints.includes("/v1/messages")
 }
 
 const parseResponsesStreamEvent = (
@@ -482,10 +483,17 @@ const handleWithCompletionsApi = async (
 
   debugJson(logger, "Translated Completions payload:", completionsPayload)
 
-  const response = await createChatCompletions(completionsPayload, {
-    requestId,
-    sessionId,
-  })
+  const explicitAgentInitiator =
+    getTrimmedHeader(c, "x-initiator")?.toLowerCase() === "agent"
+  const response = await responsesHandlerDependencies.createChatCompletions(
+    completionsPayload,
+    {
+      clientSignal: c.req.raw.signal,
+      ...(explicitAgentInitiator ? { initiator: "agent" } : {}),
+      requestId,
+      sessionId,
+    },
+  )
 
   // Non-streaming
   if (!payload.stream && !isAsyncIterable(response)) {

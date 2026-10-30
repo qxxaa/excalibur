@@ -69,6 +69,11 @@ export const translateCompletionsToMessagesPayload = (
   const jsonSchema = extractJsonSchema(payload)
   const tools = translateTools(payload.tools)
   const toolChoice = translateToolChoice(payload.tool_choice)
+  const reasoningEffort = translateReasoningEffort(payload.reasoning_effort)
+  const disableThinking =
+    Boolean(jsonSchema)
+    || toolChoice?.type === "any"
+    || toolChoice?.type === "tool"
 
   const messagesPayload: AnthropicMessagesPayload = {
     model: payload.model,
@@ -78,6 +83,9 @@ export const translateCompletionsToMessagesPayload = (
     ...(system ? { system } : {}),
     ...(tools && tools.length > 0 ? { tools } : {}),
     ...(toolChoice ? { tool_choice: toolChoice } : {}),
+    ...(reasoningEffort && !disableThinking ?
+      { output_config: { effort: reasoningEffort } }
+    : {}),
     ...(payload.top_p != null ? { top_p: payload.top_p } : {}),
     ...(payload.user ? { metadata: { user_id: payload.user } } : {}),
   }
@@ -108,6 +116,7 @@ export const translateAnthropicResultToCompletions = (
   forcedToolName?: string,
 ): ChatCompletionResponse => {
   let content = ""
+  let reasoningContent = ""
   const toolCalls: Array<{
     id: string
     type: "function"
@@ -117,6 +126,10 @@ export const translateAnthropicResultToCompletions = (
   for (const block of response.content) {
     if (block.type === "text") {
       content += block.text
+    } else if (block.type === "thinking") {
+      if (block.thinking) {
+        reasoningContent += block.thinking
+      }
     } else if (block.type === "tool_use") {
       const toolUse = block
       if (forcedToolName && toolUse.name === forcedToolName) {
@@ -133,7 +146,6 @@ export const translateAnthropicResultToCompletions = (
         })
       }
     }
-    // thinking blocks are not part of the completions response
   }
 
   // If we unwrapped a synthetic tool and there are no real tool calls,
@@ -156,6 +168,9 @@ export const translateAnthropicResultToCompletions = (
         message: {
           role: "assistant",
           content: content || null,
+          ...(reasoningContent.length > 0 ?
+            { reasoning_content: reasoningContent }
+          : {}),
           ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
         },
         logprobs: null,
@@ -411,6 +426,24 @@ const translateToolChoice = (
   }
 
   return { type: "auto" }
+}
+
+const translateReasoningEffort = (
+  effort: string | undefined,
+):
+  | NonNullable<AnthropicMessagesPayload["output_config"]>["effort"]
+  | undefined => {
+  if (effort === "minimal") return "low"
+  if (
+    effort === "low"
+    || effort === "medium"
+    || effort === "high"
+    || effort === "xhigh"
+    || effort === "max"
+  ) {
+    return effort
+  }
+  return undefined
 }
 
 // ---------------------------------------------------------------------------

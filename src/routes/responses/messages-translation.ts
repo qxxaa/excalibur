@@ -272,6 +272,8 @@ export function translateResponsesToMessages(
       type: "tool",
       name: STRUCTURED_TOOL_NAME,
     }
+    delete messagesPayload.output_config
+    delete messagesPayload.thinking
     forcedToolName = STRUCTURED_TOOL_NAME
   }
 
@@ -331,7 +333,7 @@ export function translateAnthropicToResponses(
     for (const block of response.content) {
       if (block.type === "tool_use" && block.name === context.forcedToolName) {
         structuredText += JSON.stringify(block.input)
-      } else if (block.type === "tool_use") {
+      } else if (block.type === "tool_use" || block.type === "thinking") {
         realOutput.push(
           ...translateAssistantOutput(
             { ...response, content: [block] },

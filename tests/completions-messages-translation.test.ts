@@ -4,6 +4,10 @@ import {
   translateCompletionsToMessagesPayload,
   translateAnthropicResultToCompletions,
 } from "../src/routes/chat-completions/completions-messages-translation"
+import {
+  createCompletionsFromMessagesStreamState,
+  translateAnthropicStreamToCompletions,
+} from "../src/routes/chat-completions/completions-messages-stream-translation"
 
 import type { ChatCompletionsPayload } from "~/lib/types/chat-completions"
 import type { AnthropicResponse } from "~/lib/types/anthropic"
@@ -121,6 +125,30 @@ describe("translateCompletionsToMessagesPayload", () => {
       const result = translateCompletionsToMessagesPayload(payload)
 
       expect(result.metadata).toBeUndefined()
+    })
+
+    it("maps reasoning_effort to output_config.effort", () => {
+      const payload: ChatCompletionsPayload = {
+        model: "claude-sonnet-4.6",
+        messages: [{ role: "user", content: "Hi" }],
+        reasoning_effort: "high",
+      }
+
+      const result = translateCompletionsToMessagesPayload(payload)
+
+      expect(result.output_config).toEqual({ effort: "high" })
+    })
+
+    it("normalizes minimal reasoning_effort to low", () => {
+      const payload: ChatCompletionsPayload = {
+        model: "claude-sonnet-4.6",
+        messages: [{ role: "user", content: "Hi" }],
+        reasoning_effort: "minimal",
+      }
+
+      const result = translateCompletionsToMessagesPayload(payload)
+
+      expect(result.output_config).toEqual({ effort: "low" })
     })
   })
 
@@ -861,7 +889,7 @@ describe("translateAnthropicResultToCompletions", () => {
     expect(result.choices[0].finish_reason).toBe("tool_calls")
   })
 
-  it("ignores thinking blocks in output", () => {
+  it("maps thinking blocks to reasoning_content in output", () => {
     const response: AnthropicResponse = {
       id: "msg_think",
       type: "message",
@@ -882,7 +910,9 @@ describe("translateAnthropicResultToCompletions", () => {
 
     const result = translateAnthropicResultToCompletions(response)
 
-    // Only text should appear - thinking is not part of completions format
+    expect(result.choices[0].message.reasoning_content).toBe(
+      "Let me reason about this...",
+    )
     expect(result.choices[0].message.content).toBe("The answer is 42.")
     expect(result.choices[0].message.tool_calls).toBeUndefined()
   })
@@ -1262,6 +1292,48 @@ describe("structured output via forced tool_use", () => {
         "structured_response",
       )
       expect(result.choices[0].message.content).toBeNull()
+    })
+
+    it("maps streaming thinking_delta to reasoning_content chunk", () => {
+      const state = createCompletionsFromMessagesStreamState()
+      translateAnthropicStreamToCompletions(
+        {
+          type: "message_start",
+          message: {
+            id: "msg_stream_think",
+            type: "message",
+            role: "assistant",
+            content: [],
+            model: "claude-sonnet-4.6",
+            stop_reason: null,
+            stop_sequence: null,
+            usage: { input_tokens: 10, output_tokens: 0 },
+          },
+        },
+        state,
+      )
+      translateAnthropicStreamToCompletions(
+        {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "thinking", thinking: "" },
+        },
+        state,
+      )
+      const msgs = translateAnthropicStreamToCompletions(
+        {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "thinking_delta", thinking: "Deep thought..." },
+        },
+        state,
+      )
+
+      expect(msgs).toHaveLength(1)
+      const chunk = JSON.parse(msgs[0].data!) as {
+        choices: Array<{ delta: { reasoning_content?: string } }>
+      }
+      expect(chunk.choices[0].delta.reasoning_content).toBe("Deep thought...")
     })
   })
 })

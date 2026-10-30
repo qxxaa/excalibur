@@ -25,6 +25,7 @@ import type {
   ResponseInputMessage,
   ResponseOutputFunctionCall,
   ResponseOutputMessage,
+  ResponseOutputReasoning,
   ResponsesPayload,
   ResponsesResult,
   ToolChoiceFunction,
@@ -74,8 +75,21 @@ export const translateCompletionsResultToResponses = (
   const choice = response.choices[0]
   const message = choice?.message
 
-  const output: Array<ResponseOutputMessage | ResponseOutputFunctionCall> = []
+  const output: Array<
+    ResponseOutputMessage | ResponseOutputFunctionCall | ResponseOutputReasoning
+  > = []
   let outputText = ""
+
+  // Reasoning content
+  const reasoningText = message?.reasoning_content ?? message?.reasoning_text
+  if (reasoningText) {
+    output.push({
+      id: `rs_${response.id}`,
+      type: "reasoning",
+      status: "completed",
+      summary: [{ type: "summary_text", text: reasoningText }],
+    })
+  }
 
   // Text content
   if (message?.content) {
@@ -85,7 +99,9 @@ export const translateCompletionsResultToResponses = (
       type: "message",
       role: "assistant",
       status: "completed",
-      content: [{ type: "output_text", text: message.content }],
+      content: [
+        { type: "output_text", text: message.content, annotations: [] },
+      ],
     })
   }
 
@@ -110,7 +126,7 @@ export const translateCompletionsResultToResponses = (
       type: "message",
       role: "assistant",
       status: "completed",
-      content: [{ type: "output_text", text: "" }],
+      content: [{ type: "output_text", text: "", annotations: [] }],
     })
   }
 
@@ -170,22 +186,26 @@ const translateInput = (
     const role = item.role as string | undefined
 
     if (type === "function_call") {
-      // Previous function call from assistant
+      // Previous function call from assistant - coalesce onto preceding assistant message
       const fc = item as unknown as ResponseFunctionToolCallItem
-      messages.push({
-        role: "assistant",
-        content: null,
-        tool_calls: [
-          {
-            id: fc.call_id,
-            type: "function",
-            function: {
-              name: fc.name,
-              arguments: fc.arguments,
-            },
-          },
-        ],
-      })
+      const toolCall = {
+        id: fc.call_id,
+        type: "function" as const,
+        function: {
+          name: fc.name,
+          arguments: fc.arguments,
+        },
+      }
+      const lastMessage = messages.at(-1)
+      if (lastMessage?.role === "assistant") {
+        lastMessage.tool_calls = [...(lastMessage.tool_calls ?? []), toolCall]
+      } else {
+        messages.push({
+          role: "assistant",
+          content: null,
+          tool_calls: [toolCall],
+        })
+      }
     } else if (type === "function_call_output") {
       // Tool result
       const fco = item as unknown as ResponseFunctionCallOutputItem

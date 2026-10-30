@@ -38,7 +38,13 @@ import { createMessages } from "~/services/copilot/create-messages"
 import {
   getResponsesTransportForModel,
   getResponsesRequestOptions,
+  normalizeResponsesReasoningEffort,
 } from "~/routes/responses/utils"
+import {
+  appendClaudeContinuationMessage,
+  prepareMessagesApiPayload,
+} from "~/routes/messages/preprocess"
+import type { Model } from "~/lib/types/models"
 import {
   translateCompletionsToResponsesPayload,
   translateResponsesResultToCompletions,
@@ -108,7 +114,7 @@ export async function handleCompletion(c: Context) {
   const supportsChatCompletions =
     selectedModel?.supported_endpoints?.includes("/chat/completions") ?? false
   if (responsesTransport && !supportsChatCompletions) {
-    return await handleWithResponsesApi(c, payload)
+    return await handleWithResponsesApi(c, payload, selectedModel)
   }
 
   // Prefer Messages over native completions when available (mirrors upstream
@@ -118,7 +124,7 @@ export async function handleCompletion(c: Context) {
   const supportsMessages =
     selectedModel?.supported_endpoints?.includes("/v1/messages") ?? false
   if (supportsMessages) {
-    return await handleWithMessagesApi(c, payload)
+    return await handleWithMessagesApi(c, payload, selectedModel)
   }
 
   // not support subagent marker for now , set sessionId = getUUID(requestId)
@@ -135,6 +141,7 @@ export async function handleCompletion(c: Context) {
 
   const response = await createChatCompletions(payload, {
     clientSignal: c.req.raw.signal,
+    ...(isExplicitAgentInitiator(c) ? { initiator: "agent" } : {}),
     requestId,
     sessionId,
   })
@@ -180,8 +187,14 @@ export async function handleCompletion(c: Context) {
 const handleWithResponsesApi = async (
   c: Context,
   payload: ChatCompletionsPayload,
+  selectedModel?: Model,
 ) => {
   const responsesPayload = translateCompletionsToResponsesPayload(payload)
+  const resolvedModel = selectedModel ?? findEndpointModel(payload.model)
+  normalizeResponsesReasoningEffort(
+    responsesPayload,
+    resolvedModel?.capabilities?.supports?.reasoning_effort,
+  )
 
   const requestId = generateRequestIdFromPayload(payload)
   logger.debug("Generated request ID (responses flow):", requestId)
@@ -197,11 +210,13 @@ const handleWithResponsesApi = async (
 
   debugJson(logger, "Translated Responses payload:", responsesPayload)
 
-  const { vision, initiator } = getResponsesRequestOptions(responsesPayload)
-  const selectedModel = findEndpointModel(payload.model)
-  const transport = getResponsesTransportForModel(selectedModel) ?? "http"
+  const { vision, initiator: inferredInitiator } =
+    getResponsesRequestOptions(responsesPayload)
+  const initiator = isExplicitAgentInitiator(c) ? "agent" : inferredInitiator
+  const transport = getResponsesTransportForModel(resolvedModel) ?? "http"
 
   const response = await createResponses(responsesPayload, {
+    clientSignal: c.req.raw.signal,
     vision,
     initiator,
     requestId,
@@ -284,6 +299,9 @@ const isNonStreaming = (
   response: Awaited<ReturnType<typeof createChatCompletions>>,
 ): response is ChatCompletionResponse => Object.hasOwn(response, "choices")
 
+const isExplicitAgentInitiator = (c: Context): boolean =>
+  c.req.header("x-initiator")?.trim().toLowerCase() === "agent"
+
 const parseChatCompletionChunk = (
   chunk: unknown,
 ): ChatCompletionChunk | null => {
@@ -306,8 +324,12 @@ const parseChatCompletionChunk = (
 const handleWithMessagesApi = async (
   c: Context,
   payload: ChatCompletionsPayload,
+  selectedModel?: Model,
 ) => {
   const messagesPayload = translateCompletionsToMessagesPayload(payload)
+  const resolvedModel = selectedModel ?? findEndpointModel(payload.model)
+  appendClaudeContinuationMessage(messagesPayload)
+  prepareMessagesApiPayload(messagesPayload, resolvedModel)
 
   // Detect if we injected a synthetic tool for structured output
   const rf = payload.response_format
@@ -329,6 +351,8 @@ const handleWithMessagesApi = async (
   debugJson(logger, "Translated Messages payload:", messagesPayload)
 
   const response = await createMessages(messagesPayload, undefined, {
+    clientSignal: c.req.raw.signal,
+    ...(isExplicitAgentInitiator(c) ? { initiator: "agent" } : {}),
     requestId,
     sessionId,
   })

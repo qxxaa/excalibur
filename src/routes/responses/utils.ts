@@ -203,6 +203,15 @@ export const sanitizeUnsupportedInputFields = (
       delete record[field]
       removedFieldCount += 1
     }
+
+    if (
+      isResponseInputMessage(item)
+      && (item.role === "user" || item.role === "assistant")
+      && Object.hasOwn(record, "id")
+    ) {
+      delete record.id
+      removedFieldCount += 1
+    }
   }
 
   return removedFieldCount

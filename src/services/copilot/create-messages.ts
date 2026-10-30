@@ -76,6 +76,7 @@ export const createMessages = async (
   options: {
     anthropicVersionHeader?: string
     clientSignal?: AbortSignal
+    initiator?: "agent" | "user"
     subagentMarker?: SubagentMarker | null
     requestId: string
     sessionId?: string
@@ -96,12 +97,16 @@ export const createMessages = async (
   })
 
   let isInitiateRequest = false
-  const lastMessage = payload.messages.at(-1)
-  if (lastMessage?.role === "user") {
-    isInitiateRequest =
-      Array.isArray(lastMessage.content) ?
-        lastMessage.content.some((block) => block.type !== "tool_result")
-      : true
+  if (options.initiator) {
+    isInitiateRequest = options.initiator === "user"
+  } else {
+    const lastMessage = payload.messages.at(-1)
+    if (lastMessage?.role === "user") {
+      isInitiateRequest =
+        Array.isArray(lastMessage.content) ?
+          lastMessage.content.some((block) => block.type !== "tool_result")
+        : true
+    }
   }
 
   const headers: Record<string, string> = {

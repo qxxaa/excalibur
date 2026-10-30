@@ -619,6 +619,78 @@ describe("responses handler token usage", () => {
     )
   })
 
+  test("routes a Completions-only Copilot model directly through the Completions adapter and honours explicit x-initiator: agent", async () => {
+    state.models = {
+      object: "list",
+      data: [
+        {
+          capabilities: {
+            family: "gemini",
+            limits: { max_prompt_tokens: 128000 },
+            object: "model_capabilities",
+            supports: { tool_calls: true },
+            tokenizer: "o200k_base",
+            type: "chat",
+          },
+          id: "gemini-test",
+          model_picker_enabled: true,
+          name: "Gemini Test",
+          object: "model",
+          preview: false,
+          supported_endpoints: ["/chat/completions"],
+          vendor: "google",
+          version: "test",
+        },
+      ],
+    }
+    const handleMessages = mock(
+      (_context: Context, _payload: AnthropicMessagesPayload) =>
+        Promise.resolve(Response.json({})),
+    )
+    const createCompletions = mock((() =>
+      Promise.resolve({
+        id: "chatcmpl-gemini",
+        object: "chat.completion" as const,
+        created: 1000,
+        model: "gemini-test",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant" as const,
+              content: "Hello from Gemini",
+            },
+            logprobs: null,
+            finish_reason: "stop" as const,
+          },
+        ],
+        usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+      })) as unknown as typeof responsesHandlerDependencies.createChatCompletions)
+    responsesMessagesDependencies.handleCompletionPayload = handleMessages
+    responsesHandlerDependencies.createChatCompletions = createCompletions
+
+    const response = await createApp().request("/v1/responses", {
+      body: JSON.stringify({
+        model: "gemini-test",
+        input: [{ role: "user", type: "message", content: "Hello" }],
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-initiator": "agent",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(createResponses).not.toHaveBeenCalled()
+    expect(handleMessages).not.toHaveBeenCalled()
+    expect(createCompletions).toHaveBeenCalledTimes(1)
+    expect(createCompletions.mock.calls[0]?.[1]?.clientSignal).toBeInstanceOf(
+      AbortSignal,
+    )
+    expect(createCompletions.mock.calls[0]?.[1]?.initiator).toBe("agent")
+  })
+
   test("forwards session, request, and subagent context to the Messages adapter", async () => {
     state.models = {
       object: "list",

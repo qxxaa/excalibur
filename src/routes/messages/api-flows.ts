@@ -148,6 +148,7 @@ export const handleWithChatCompletions = async (
     openAIPayload,
     {
       clientSignal: c.req?.raw?.signal,
+      ...(isExplicitAgentInitiator(c) ? { initiator: "agent" } : {}),
       subagentMarker,
       requestId,
       sessionId,
@@ -270,7 +271,9 @@ export const handleWithResponsesApi = async (
 
   debugJson(logger, "Translated Responses payload:", responsesPayload)
 
-  const { vision, initiator } = getResponsesRequestOptions(responsesPayload)
+  const { vision, initiator: inferredInitiator } =
+    getResponsesRequestOptions(responsesPayload)
+  const initiator = isExplicitAgentInitiator(c) ? "agent" : inferredInitiator
   const transport =
     getResponsesTransportForModel(selectedModel, {
       compactType: requestOptions.compactType,
@@ -408,6 +411,7 @@ export const handleWithMessagesApi = async (
     {
       anthropicVersionHeader: c.req?.header("anthropic-version"),
       clientSignal: c.req?.raw?.signal,
+      ...(isExplicitAgentInitiator(c) ? { initiator: "agent" } : {}),
       subagentMarker,
       requestId,
       sessionId,
@@ -544,6 +548,9 @@ const uniqueIndexes = (indexes: Array<number>): Array<number> => [
 const isNonStreaming = (
   response: Awaited<ReturnType<typeof createCopilotChatCompletions>>,
 ): response is ChatCompletionResponse => Object.hasOwn(response, "choices")
+
+const isExplicitAgentInitiator = (c: Context): boolean =>
+  c.req?.header("x-initiator")?.trim().toLowerCase() === "agent"
 
 const createCopilotUsageRecorder = (options: {
   endpoint: TokenUsageEndpoint

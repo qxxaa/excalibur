@@ -175,7 +175,7 @@ describe("function call streaming", () => {
     expect(chunks).toHaveLength(1)
     expect(chunks[0].choices[0].delta.tool_calls).toEqual([
       {
-        index: 1,
+        index: 0,
         id: "call-1",
         type: "function",
         function: {
@@ -223,7 +223,7 @@ describe("function call streaming", () => {
     expect(chunks).toHaveLength(1)
     expect(chunks[0].choices[0].delta.tool_calls).toEqual([
       {
-        index: 1,
+        index: 0,
         type: "function",
         function: {
           arguments: '{"location":',
@@ -518,11 +518,11 @@ describe("metadata capture from response envelope", () => {
 })
 
 // ---------------------------------------------------------------------------
-// Unknown / unhandled events
+// Reasoning summary streaming
 // ---------------------------------------------------------------------------
 
-describe("unhandled events", () => {
-  it("produces no output for unknown event types", () => {
+describe("reasoning summary streaming", () => {
+  it("maps response.reasoning_summary_text.delta to reasoning_content chunk", () => {
     const state = createCompletionsStreamState()
 
     const msgs = translateResponsesStreamEventToCompletions(
@@ -532,9 +532,37 @@ describe("unhandled events", () => {
         item_id: "item-1",
         output_index: 0,
         sequence_number: 1,
-        content_index: 0,
         summary_index: 0,
-      } as unknown as ResponseStreamEvent,
+      } satisfies ResponseStreamEvent,
+      state,
+    )
+
+    const chunks = parseChunks(msgs)
+    expect(chunks).toHaveLength(2)
+    expect(chunks[0].choices[0].delta).toEqual({ role: "assistant" })
+    expect(chunks[1].choices[0].delta).toEqual({
+      reasoning_content: "thinking...",
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Unknown / unhandled events
+// ---------------------------------------------------------------------------
+
+describe("unhandled events", () => {
+  it("produces no output for unknown event types", () => {
+    const state = createCompletionsStreamState()
+
+    const msgs = translateResponsesStreamEventToCompletions(
+      {
+        type: "response.reasoning_summary_text.done",
+        text: "thinking...",
+        item_id: "item-1",
+        output_index: 0,
+        sequence_number: 1,
+        summary_index: 0,
+      } satisfies ResponseStreamEvent,
       state,
     )
 

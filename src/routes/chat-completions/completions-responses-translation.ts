@@ -24,8 +24,10 @@ import type {
   ResponseFunctionToolCallItem,
   ResponseOutputFunctionCall,
   ResponseOutputMessage,
+  ResponseOutputReasoning,
   ResponsesPayload,
   ResponsesResult,
+  ResponsesTextConfig,
   ResponseUsage,
   ToolChoiceFunction,
   ToolChoiceOptions,
@@ -54,7 +56,9 @@ export const translateCompletionsToResponsesPayload = (
     tool_choice: translateToolChoice(payload.tool_choice),
     parallel_tool_calls: payload.parallel_tool_calls ?? true,
     reasoning:
-      reasoningEffort ? ({ effort: reasoningEffort } as Reasoning) : undefined,
+      reasoningEffort ?
+        ({ effort: reasoningEffort, summary: "auto" } as Reasoning)
+      : undefined,
     store: false,
     text: translateResponseFormat(payload.response_format),
   }
@@ -82,6 +86,18 @@ export const translateResponsesResultToCompletions = (
     .map((part) => (part as { text: string }).text)
     .join("")
 
+  const reasoningItems = response.output.filter(
+    (item): item is ResponseOutputReasoning => item.type === "reasoning",
+  )
+  const reasoningContent = reasoningItems
+    .flatMap((item) => item.summary ?? [])
+    .filter(
+      (part): part is { type: string; text: string } =>
+        part.type === "summary_text" && typeof part.text === "string",
+    )
+    .map((part) => part.text)
+    .join("")
+
   return {
     id: response.id,
     object: "chat.completion",
@@ -93,6 +109,9 @@ export const translateResponsesResultToCompletions = (
         message: {
           role: "assistant",
           content: content || null,
+          ...(reasoningContent.length > 0 && {
+            reasoning_content: reasoningContent,
+          }),
           ...(functionCalls.length > 0 && {
             tool_calls: functionCalls.map((fc) => ({
               id: fc.call_id,
@@ -381,20 +400,9 @@ const ensureAdditionalPropertiesFalse = (
   return clone
 }
 
-interface TextFormat {
-  format:
-    | { type: "json_object" }
-    | {
-        type: "json_schema"
-        name: string
-        schema: Record<string, unknown>
-        strict?: boolean
-      }
-}
-
 const translateResponseFormat = (
   responseFormat: ResponseFormat | null | undefined,
-): TextFormat | undefined => {
+): ResponsesTextConfig | undefined => {
   if (!responseFormat) {
     return undefined
   }

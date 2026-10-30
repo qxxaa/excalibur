@@ -828,7 +828,7 @@ describe("translateCompletionsToResponsesPayload", () => {
         basePayload({ reasoning_effort: "medium" }),
       )
 
-      expect(result.reasoning).toEqual({ effort: "medium" })
+      expect(result.reasoning).toEqual({ effort: "medium", summary: "auto" })
     })
 
     it("falls back to config when payload has no reasoning_effort", () => {
@@ -837,6 +837,7 @@ describe("translateCompletionsToResponsesPayload", () => {
 
       expect(result.reasoning).toBeDefined()
       expect(result.reasoning!.effort).toBeTruthy()
+      expect(result.reasoning!.summary).toBe("auto")
     })
   })
 
@@ -984,6 +985,34 @@ describe("translateResponsesResultToCompletions", () => {
     )
 
     expect(result.choices[0].message).not.toHaveProperty("tool_calls")
+  })
+
+  it("maps reasoning summary_text blocks to reasoning_content", () => {
+    const result = translateResponsesResultToCompletions(
+      baseResult({
+        output: [
+          {
+            id: "rs-1",
+            type: "reasoning",
+            status: "completed",
+            summary: [
+              { type: "summary_text", text: "Step 1. " },
+              { type: "summary_text", text: "Step 2." },
+            ],
+          },
+          {
+            id: "msg-1",
+            type: "message",
+            role: "assistant",
+            status: "completed",
+            content: [{ type: "output_text", text: "Done.", annotations: [] }],
+          } satisfies ResponseOutputMessage,
+        ],
+      }),
+    )
+
+    expect(result.choices[0].message.reasoning_content).toBe("Step 1. Step 2.")
+    expect(result.choices[0].message.content).toBe("Done.")
   })
 
   describe("finish_reason", () => {

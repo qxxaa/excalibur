@@ -293,7 +293,18 @@ const handleContentBlockDelta = (
     }
   }
 
-  // thinking_delta, signature_delta etc. - no completions equivalent
+  if (delta.type === "thinking_delta") {
+    if (!delta.thinking) return []
+    emitRoleChunkIfNeeded(state)
+    return [
+      createChunkMessage(state, {
+        delta: { reasoning_content: delta.thinking },
+        finishReason: null,
+      }),
+    ]
+  }
+
+  // signature_delta etc. - no completions equivalent
   return []
 }
 

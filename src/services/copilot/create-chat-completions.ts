@@ -25,6 +25,7 @@ export const createChatCompletions = async (
   payload: ChatCompletionsPayload,
   options: {
     clientSignal?: AbortSignal
+    initiator?: "agent" | "user"
     subagentMarker?: SubagentMarker | null
     requestId: string
     sessionId?: string
@@ -42,8 +43,8 @@ export const createChatCompletions = async (
   // Agent/user check for x-initiator header
   // Determine if any message is from an agent ("assistant" or "tool")
   // Refactor `isAgentCall` logic to check only the last message in the history rather than any message. This prevents valid user messages from being incorrectly flagged as agent calls due to previous assistant history, ensuring proper credit consumption for multi-turn conversations.
-  let isAgentCall = false
-  if (payload.messages.length > 0) {
+  let isAgentCall = options.initiator === "agent"
+  if (!options.initiator && payload.messages.length > 0) {
     const lastMessage = payload.messages.at(-1)
     if (lastMessage) {
       isAgentCall = ["assistant", "tool"].includes(lastMessage.role)

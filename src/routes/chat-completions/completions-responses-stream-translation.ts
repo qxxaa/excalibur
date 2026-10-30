@@ -26,6 +26,8 @@ interface CompletionsStreamState {
   createdAt: number
   model: string
   started: boolean
+  nextToolCallIndex: number
+  toolCallIndices: Map<number, number>
 }
 
 interface SSEMessage {
@@ -42,6 +44,8 @@ export const createCompletionsStreamState = (): CompletionsStreamState => ({
   createdAt: Math.floor(Date.now() / 1000),
   model: "",
   started: false,
+  nextToolCallIndex: 0,
+  toolCallIndices: new Map(),
 })
 
 /**
@@ -77,17 +81,32 @@ export const translateResponsesStreamEventToCompletions = (
       break
     }
 
+    case "response.reasoning_summary_text.delta": {
+      if (!event.delta) {
+        break
+      }
+      emitRoleChunkIfNeeded(state, messages)
+      messages.push(
+        createChunkMessage(state, {
+          delta: { reasoning_content: event.delta },
+        }),
+      )
+      break
+    }
+
     case "response.function_call_arguments.delta": {
       if (event.output_index === undefined) {
         break
       }
+      const toolCallIndex =
+        state.toolCallIndices.get(event.output_index) ?? event.output_index
       emitRoleChunkIfNeeded(state, messages)
       messages.push(
         createChunkMessage(state, {
           delta: {
             tool_calls: [
               {
-                index: event.output_index,
+                index: toolCallIndex,
                 type: "function",
                 function: {
                   arguments: event.delta ?? "",
@@ -156,6 +175,8 @@ const handleOutputItemAdded = (
 
   if (item.type === "function_call") {
     const fc = item
+    const toolCallIndex = state.nextToolCallIndex++
+    state.toolCallIndices.set(outputIndex, toolCallIndex)
     state.started = true
     messages.push(
       createChunkMessage(state, {
@@ -163,7 +184,7 @@ const handleOutputItemAdded = (
           role: "assistant",
           tool_calls: [
             {
-              index: outputIndex,
+              index: toolCallIndex,
               id: fc.call_id,
               type: "function",
               function: {

@@ -103,7 +103,20 @@ export const translateCompletionsChunkToResponsesEvents = (
       item_id: `msg_${state.responseId}`,
       output_index: 0,
       content_index: 0,
-      part: { type: "output_text", text: "" },
+      part: { type: "output_text", text: "", annotations: [] },
+      sequence_number: state.sequenceNumber++,
+    })
+  }
+
+  // Reasoning content delta
+  const reasoningDelta = delta?.reasoning_content ?? delta?.reasoning_text
+  if (reasoningDelta) {
+    events.push({
+      type: "response.reasoning_summary_text.delta",
+      item_id: `rs_${state.responseId}`,
+      output_index: 0,
+      summary_index: 0,
+      delta: reasoningDelta,
       sequence_number: state.sequenceNumber++,
     })
   }
@@ -189,7 +202,9 @@ export const translateCompletionsChunkToResponsesEvents = (
           type: "message",
           role: "assistant",
           status: "completed",
-          content: [{ type: "output_text", text: state.outputText }],
+          content: [
+            { type: "output_text", text: state.outputText, annotations: [] },
+          ],
         },
         sequence_number: state.sequenceNumber++,
       })
@@ -228,7 +243,9 @@ export const translateCompletionsChunkToResponsesEvents = (
         type: "message",
         role: "assistant",
         status: "completed",
-        content: [{ type: "output_text", text: state.outputText }],
+        content: [
+          { type: "output_text", text: state.outputText, annotations: [] },
+        ],
       })
     }
     for (const [, tc] of state.toolCalls) {
@@ -312,7 +329,7 @@ const emitLateStart = (
     item_id: `msg_${state.responseId}`,
     output_index: 0,
     content_index: 0,
-    part: { type: "output_text", text: "" },
+    part: { type: "output_text", text: "", annotations: [] },
     sequence_number: state.sequenceNumber++,
   })
 }
